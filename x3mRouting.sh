@@ -13,7 +13,7 @@
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
 #   on-going support and collaboration on this project!
 #
-#   Chk_Entware function and code to process the passing of parms written by Martineau
+#   Chk_Entware function and code to process the passing of params written by Martineau
 #
 #   Thanks to Addamm00, author of Skynet, for the Check_Lock and Kill_Lock functions to prevent concurrent processing.
 #   Source code can be found at https://github.com/Adamm00/IPSet_ASUS
@@ -80,12 +80,12 @@
 #
 # VPN Server to VPN Client Routing:
 #
-# x3mRouting {'server='1|2|both} {'client='1|2|3|4|5} ['del'] ['del=force']
+# x3mRouting {'server='1|2|3|all} {'client='1|2|3|4|5|11|12|13|14|15} ['del'] ['del=force']
 #_____________________________________________________________________________________________________________
 #
 # VPN Server to existing LAN routing rules for one or more IPSET lists
 #
-# x3mRouting {'server='1|2|both} {'ipset_name='IPSET[,IPSET]...} ['del'] ['del=force']
+# x3mRouting {'server='1|2|3|all} {'ipset_name='IPSET[,IPSET]...} ['del'] ['del=force']
 #_____________________________________________________________________________________________________________
 
 # Print between line beginning with '#__' to first blank line inclusive (source: Martineau)
@@ -185,7 +185,7 @@ Chk_Entware() {
 }
 
 ### Define interface/bitmask to route traffic to below
-Set_Fwmark_Parms() {
+Set_Fwmark_Params() {
   FWMARK_WAN="0x8000/0x8000"
   FWMARK_OVPNC1="0x1000/0x1000"
   FWMARK_OVPNC2="0x2000/0x2000"
@@ -229,10 +229,8 @@ Set_IP_Rule() {
       # 0 - Disables reverse path filtering, accepting all packets without verifying the source route.
       # 1 - Enables strict mode, accepting packets only if the route to the source IP matches the incoming interface.
       # 2 - Enables loose mode, allowing packets to be accepted on any interface as long as a route to the source IP exists.
-      #
-      # Creates 'wgclient_start' file if it doesn't exist and adds 'rp_filter' to ensure persistence across WG restarts.
       rp_filter="echo 2 >/proc/sys/net/ipv4/conf/$ROUTE_TABLE/rp_filter"
-      check_wgclient_start_for_entries "$rp_filter" && eval "$rp_filter"
+      check_files_for_rp_filter_entry "$rp_filter" && eval "$rp_filter"
     fi
 
   fi
@@ -246,12 +244,13 @@ Check_Dnsmasq() {
   if [ -s "/jffs/configs/dnsmasq.conf.add" ]; then                                     # dnsmasq.conf.add file exists
     if [ "$(grep -cw "$DNSMASQ_ENTRY" "/jffs/configs/dnsmasq.conf.add")" -eq 0 ]; then # only add if entry does not exist
       echo "ipset=$DNSMASQ_ENTRY" >>/jffs/configs/dnsmasq.conf.add                     # add 'ipset=' domains entry to dnsmasq.conf.add
-      service restart_dnsmasq 2>/dev/null
+      logger -st "($(basename "$0"))" $$ "ipset=$DNSMASQ_ENTRY" added to "/jffs/configs/dnsmasq.conf.add"
+      logger -st "($(basename "$0"))" $$ "restart dnsmasq service" && service restart_dnsmasq 2>/dev/null
     fi
   else
     printf 'ipset=%s\n' "$DNSMASQ_ENTRY" >/jffs/configs/dnsmasq.conf.add # dnsmasq.conf.add does not exist, create dnsmasq.conf.add
     logger -st "($(basename "$0"))" $$ "ipset=$DNSMASQ_ENTRY" added to "/jffs/configs/dnsmasq.conf.add"
-    service restart_dnsmasq 2>/dev/null
+    logger -st "($(basename "$0"))" $$ "restart dnsmasq service" && service restart_dnsmasq 2>/dev/null
   fi
 }
 
@@ -377,20 +376,27 @@ Check_For_Shebang() {
 
 }
 
-check_wgclient_start_for_entries() {
+# Ensure 'rp_filter' is applied persistently across reboots by adding it to the following files:
+# - 'wgclient_start': For WireGuard client startup.
+# - 'wan-event': For WAN events (e.g., IP changes).
+# - 'nat-start': For NAT initialization (e.g., firewall restart).
+check_files_for_rp_filter_entry() {
+  entry=$1
+  files="$WGCLIENT_START $WAN_EVENT $NAT_START"
 
-  entries=$1
+  # Ensure all files exist
+  for file in $files; do
+    # Ensure the file exists and is executable
+    if [ ! -f "$file" ]; then
+      echo '#!/bin/sh' > "$file" && chmod 755 "$file"
+    fi
 
-  # Ensure $WGCLIENT_START file exists
-  if [ ! -f "$WGCLIENT_START" ]; then
-    echo '#!/bin/sh' >"$WGCLIENT_START" && chmod 755 "$WGCLIENT_START"
-  fi
-
-  # Add $rp_filter to $WGCLIENT_START if not already present
-  if ! grep -Fxq "$entries" "$WGCLIENT_START"; then
-    echo "$entries" >>"$WGCLIENT_START"
-    logger -st "($(basename "$0"))" $$ "$entries added to $WGCLIENT_START"
-  fi
+    # Add the $rp_filter to the file if not already present
+    if ! grep -Fxq "$entry" "$file"; then
+      echo "$entry # x3mRouting" >> "$file"
+      logger -st "($(basename "$0"))" $$ "$entry added to $file"
+    fi
+  done
 }
 
 Check_Nat_Start_For_Entries() {
@@ -414,14 +420,14 @@ Check_Nat_Start_For_Entries() {
   # nat-start File
   if [ -s "$NAT_START" ]; then
     if [ "$(grep -cw "$SCRIPT_ENTRY" "$NAT_START")" -eq 0 ]; then # if true, then no lines exist
-      echo "$SCRIPT_ENTRY" >>"$NAT_START"                         # add $SCRIPT_ENTRY to $NAT_START
+      echo "$SCRIPT_ENTRY # x3mRouting" >>"$NAT_START"                         # add $SCRIPT_ENTRY to $NAT_START
       logger -st "($(basename "$0"))" $$ "$SCRIPT_ENTRY added to $NAT_START"
     fi
   else # file does not exist
     true >"$NAT_START"
     {
       printf '%s\n' "#!/bin/sh"
-      printf '%s\n' "$SCRIPT_ENTRY"
+      printf '%s\n' "$SCRIPT_ENTRY # x3mRouting"
     } >"$NAT_START"
     logger -st "($(basename "$0"))" $$ "$SCRIPT_ENTRY added to $NAT_START"
   fi
@@ -495,14 +501,14 @@ Check_Files_For_Entries() {
   # nat-start File
   if [ -s "$NAT_START" ]; then
     if [ "$(grep -cw "$SCRIPT_ENTRY" "$NAT_START")" -eq 0 ]; then # if true, then no lines exist
-      echo "$SCRIPT_ENTRY" >>"$NAT_START"                         # add $SCRIPT_ENTRY to $NAT_START
+      echo "$SCRIPT_ENTRY # x3mRouting" >>"$NAT_START"                         # add $SCRIPT_ENTRY to $NAT_START
       logger -st "($(basename "$0"))" $$ "$SCRIPT_ENTRY added to $NAT_START"
     fi
   else # file does not exist
     true >"$NAT_START"
     {
       printf '%s\n' "#!/bin/sh"
-      printf '%s\n' "$SCRIPT_ENTRY"
+      printf '%s\n' "$SCRIPT_ENTRY # x3mRouting"
     } >"$NAT_START"
     logger -st "($(basename "$0"))" $$ "$SCRIPT_ENTRY added to $NAT_START"
   fi
@@ -765,6 +771,7 @@ Delete_Ipset_List() {
     logger -t "($(basename "$0"))" $$ "Checking $NAT_START..."
     if [ "$(grep -cw "$IPSET_NAME" "$NAT_START")" -ge 1 ]; then # if true, then one or more lines exist
       sed -i "\~\b$IPSET_NAME\b~d" "$NAT_START"
+      sed -i "\|echo 2 >/proc/sys/net/ipv4/conf/wgc|d" "$NAT_START"
       logger -t "($(basename "$0"))" $$ "Script entry for $IPSET_NAME deleted from $NAT_START"
     else
       logger -t "($(basename "$0"))" $$ "No $IPSET_NAME references found in $NAT_START."
@@ -778,6 +785,14 @@ Delete_Ipset_List() {
     sed -i "\|echo 2 >/proc/sys/net/ipv4/conf/wgc|d" "$WGCLIENT_START"
     logger -t "($(basename "$0"))" $$ "Script entry for WGClient deleted from $WGCLIENT_START"
     Check_For_Shebang "$WGCLIENT_START"
+  fi
+
+  # Check for rp_filter entry in /jffs/scripts/wan-event and remove if found
+  if [ -s "$WAN_EVENT" ]; then
+    logger -t "($(basename "$0"))" $$ "Checking $WAN_EVENT..."
+    sed -i "\|echo 2 >/proc/sys/net/ipv4/conf/wgc|d" "$WAN_EVENT"
+    logger -t "($(basename "$0"))" $$ "Script entry for WGClient deleted from $WAN_EVENT"
+    Check_For_Shebang "$WAN_EVENT"
   fi
 
   # Check_Files_For_Entries for any entries related to IPSET_NAME
@@ -829,7 +844,7 @@ Delete_Ipset_List() {
 
   # Delete PREROUTING Rule for VPN Server to IPSET & POSTROUTING Rule
   logger -t "($(basename "$0"))" $$ "Checking POSTROUTING iptables rules..."
-  for SERVER_TUN in tun21 tun22; do
+  for SERVER_TUN in tun21 tun22 wgs1; do
     SERVER=$(echo "$SERVER_TUN" | awk '{ string=substr($0, 5, 5); print string; }')
     TUN="$(iptables -nvL PREROUTING -t mangle --line | grep "$SERVER_TUN" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $7}')"
     if [ -n "$TUN" ]; then
@@ -982,7 +997,7 @@ Manual_Method() {
   fi
 }
 
-VPN_Server_to_VPN_Client() {
+VPN_Server_to_VPN_Client() { # TODO: Add support for WireGuard
 
   VPN_SERVER_INSTANCE=$1
   IFACE=$2
@@ -1009,7 +1024,7 @@ VPN_Server_to_VPN_Client() {
     eval "$IPTABLES_ADD_ENTRY"
     # vpnclientX-route-up File
     if [ -s "$VPNC_UP_FILE" ]; then
-      #Check if an existing entry exists
+      # Check if an existing entry exists
       for IPTABLES_ENTRY in "$IPTABLES_DEL_ENTRY" "$IPTABLES_ADD_ENTRY"; do
         if [ "$(grep -cw "$IPTABLES_ENTRY" "$VPNC_UP_FILE")" -eq 0 ]; then # if true, add entry
           echo "$IPTABLES_ENTRY" >>"$VPNC_UP_FILE"
@@ -1043,14 +1058,14 @@ VPN_Server_to_VPN_Client() {
     # nat-start File
     if [ -s "$NAT_START" ]; then
       if [ "$(grep -cw "$SCRIPT_ENTRY" "$NAT_START")" -eq 0 ]; then # if true, then no lines exist, add entry
-        echo "$SCRIPT_ENTRY" >>"$NAT_START"
+        echo "$SCRIPT_ENTRY # x3mRouting" >>"$NAT_START"
         logger -st "($(basename "$0"))" $$ "$SCRIPT_ENTRY added to $NAT_START"
       fi
     else # nat-start file does not exist,create it
       true >"$NAT_START"
       {
         printf '%s\n' "#!/bin/sh"
-        printf '%s\n' "$SCRIPT_ENTRY" # file does not exist, create VPNC_UP_FILE
+        printf '%s\n' "$SCRIPT_ENTRY # x3mRouting" # file does not exist, create VPNC_UP_FILE
       } >"$NAT_START"
       logger -st "($(basename "$0"))" $$ "$SCRIPT_ENTRY added to $NAT_START"
     fi
@@ -1156,16 +1171,21 @@ VPN_Server_to_IPSET() {
   DEL_FLAG=$6
 
   case "$VPN_SERVER_INSTANCE" in
-  1) VPN_SERVER_TUN="tun21" ;;
-  2) VPN_SERVER_TUN="tun22" ;;
-  *) Error_Exit "ERROR VPN Server instance $VPN_SERVER_INSTANCE should be a 1 or 2" ;;
+  1) VPN_SERVER_TUN="tun21"
+     VPN_SERVER_SUBNET="$(nvram get vpn_server1_sn)/24" # Get VPN Server IP
+  ;;
+  2) VPN_SERVER_TUN="tun22"
+     VPN_SERVER_SUBNET="$(nvram get vpn_server2_sn)/24"
+  ;;
+  3) VPN_SERVER_TUN="wgs1"
+     VPN_SERVER_SUBNET="$(nvram get wgs_addr)" # Already includes the subnet mask
+  ;;
+  *) Error_Exit "ERROR! VPN Server instance $VPN_SERVER_INSTANCE should be a 1, 2 for OpenVPN or 3 for WireGuard" ;;
   esac
-  # Get VPN Server IP
-  VPN_SERVER_IP=$(nvram get vpn_server"${VPN_SERVER_INSTANCE}"_sn)
 
   # POSTROUTING CHAIN
-  IPTABLES_POSTROUTING_DEL_ENTRY="iptables -t nat -D POSTROUTING -s \"\$(nvram get vpn_server${VPN_SERVER_INSTANCE}_sn)\"/24 -o $IFACE -j MASQUERADE 2>/dev/null"
-  IPTABLES_POSTROUTING_ADD_ENTRY="iptables -t nat -A POSTROUTING -s \"\$(nvram get vpn_server${VPN_SERVER_INSTANCE}_sn)\"/24 -o $IFACE -j MASQUERADE"
+  IPTABLES_POSTROUTING_DEL_ENTRY="iptables -t nat -D POSTROUTING -s $VPN_SERVER_SUBNET -o $IFACE -j MASQUERADE 2>/dev/null"
+  IPTABLES_POSTROUTING_ADD_ENTRY="iptables -t nat -A POSTROUTING -s $VPN_SERVER_SUBNET -o $IFACE -j MASQUERADE"
 
   # PREROUTING CHAIN
   IPTABLES_PREROUTING_DEL_ENTRY="iptables -t mangle -D PREROUTING -i $VPN_SERVER_TUN -m set --match-set $IPSET_NAME dst -j MARK --set-mark $TAG_MARK 2>/dev/null"
@@ -1183,8 +1203,8 @@ VPN_Server_to_IPSET() {
           echo "$IPTABLES_ENTRY" >>"$VPNC_UP_FILE" && logger -t "($(basename "$0"))" $$ "iptables entry added to $VPNC_UP_FILE"
         fi
       done
-      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_IP"/24 -o "$IFACE" -j MASQUERADE 2>/dev/null
-      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_IP"/24 -o "$IFACE" -j MASQUERADE
+      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -j MASQUERADE 2>/dev/null
+      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -j MASQUERADE
       iptables -t mangle -D PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK" 2>/dev/null
       iptables -t mangle -A PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK"
     else # file does not exist
@@ -1196,8 +1216,8 @@ VPN_Server_to_IPSET() {
         echo "$IPTABLES_PREROUTING_DEL_ENTRY"
         echo "$IPTABLES_PREROUTING_ADD_ENTRY"
       } >>"$VPNC_UP_FILE"
-      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_IP"/24 -o "$IFACE" -j MASQUERADE 2>/dev/null
-      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_IP"/24 -o "$IFACE" -j MASQUERADE
+      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -j MASQUERADE 2>/dev/null
+      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -j MASQUERADE
       iptables -t mangle -D PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK" 2>/dev/null
       iptables -t mangle -A PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK"
     fi
@@ -1220,7 +1240,7 @@ VPN_Server_to_IPSET() {
     fi
   else # 'del' or 'del=force' option specified.
     iptables -t mangle -D PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK" 2>/dev/null
-    iptables -t nat -D POSTROUTING -s "$VPN_SERVER_IP"/24 -o "$IFACE" -j MASQUERADE 2>/dev/null
+    iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -j MASQUERADE 2>/dev/null
 
     # VPN Client route-up File
     if [ -s "$VPNC_UP_FILE" ]; then
@@ -1330,6 +1350,7 @@ Check_Lock "$@"
 SCR_NAME=$(basename "$0" | sed 's/.sh//')
 NAT_START="/jffs/scripts/nat-start"
 WGCLIENT_START="/jffs/scripts/wgclient-start"
+WAN_EVENT="/jffs/scripts/wan-event"
 
 # Set DEL_FLAG if user specified 'del=force' parameter
 if [ "$(echo $@ | grep -cw 'del=force')" -ge 1 ]; then
@@ -1360,7 +1381,7 @@ fi
 if [ "$(echo "$@" | grep -c 'server=')" -gt 0 ]; then
   SERVER=$(echo "$@" | sed -n "s/^.*server=//p" | awk '{print $1}')
   case "$SERVER" in
-  1 | 2 | both) ;;
+  1 | 2 | 3 | all) ;;
   *) Error_Exit "ERROR: Invalid Server '$SERVER' specified." ;;
   esac
 
@@ -1387,16 +1408,16 @@ if [ "$(echo "$@" | grep -c 'server=')" -gt 0 ]; then
 
     # Delete VPN Server to VPN Client rules?
     if [ "$(echo $@ | grep -cw 'del')" -ge 1 ] || [ "$(echo $@ | grep -cw 'del=force')" -ge 1 ]; then
-      if [ "$SERVER" = "both" ]; then
-        for SERVER in 1 2; do
+      if [ "$SERVER" = "all" ]; then
+        for SERVER in 1 2 3; do
           VPN_Server_to_VPN_Client "$SERVER" "$IFACE" "$VPN_CLIENT_INSTANCE" "$DEL_FLAG"
         done
       else
         VPN_Server_to_VPN_Client "$SERVER" "$IFACE" "$VPN_CLIENT_INSTANCE" "$DEL_FLAG"
       fi
     else
-      if [ "$SERVER" = "both" ]; then
-        for SERVER in 1 2; do
+      if [ "$SERVER" = "all" ]; then
+        for SERVER in 1 2 3; do
           VPN_Server_to_VPN_Client "$SERVER" "$IFACE" "$VPN_CLIENT_INSTANCE"
         done
       else
@@ -1436,16 +1457,16 @@ if [ "$(echo "$@" | grep -c 'server=')" -gt 0 ]; then
       esac
 
       if [ "$(echo $@ | grep -cw 'del')" -ge 1 ] || [ "$(echo $@ | grep -cw 'del=force')" -ge 1 ]; then
-        if [ "$SERVER" = "both" ]; then
-          for SERVER in 1 2; do
+        if [ "$SERVER" = "all" ]; then
+          for SERVER in 1 2 3; do
             VPN_Server_to_IPSET "$SERVER" "$VPN_CLIENT_INSTANCE" "$IFACE" "$IPSET_NAME" "$TAG_MARK" "$DEL_FLAG"
           done
         else
           VPN_Server_to_IPSET "$SERVER" "$VPN_CLIENT_INSTANCE" "$IFACE" "$IPSET_NAME" "$TAG_MARK" "$DEL_FLAG"
         fi
       else
-        if [ "$SERVER" = "both" ]; then
-          for SERVER in 1 2; do
+        if [ "$SERVER" = "all" ]; then
+          for SERVER in 1 2 3; do
             VPN_Server_to_IPSET "$SERVER" "$VPN_CLIENT_INSTANCE" "$IFACE" "$IPSET_NAME" "$TAG_MARK"
           done
         else
@@ -1458,14 +1479,14 @@ if [ "$(echo "$@" | grep -c 'server=')" -gt 0 ]; then
     if [ "$(echo $@ | grep -cw 'del')" -eq 0 ] || [ "$(echo $@ | grep -cw 'del=force')" -eq 0 ]; then
       if [ -s "$NAT_START" ]; then                                    # file exists
         if [ "$(grep -cw "$SCRIPT_ENTRY" "$NAT_START")" -eq 0 ]; then # if true, then no lines exist
-          echo "$SCRIPT_ENTRY" >>"$NAT_START"                         # add $SCRIPT_ENTRY to $VPNC_UP_FILE
+          echo "$SCRIPT_ENTRY # x3mRouting" >>"$NAT_START"                         # add $SCRIPT_ENTRY to $VPNC_UP_FILE
           logger -st "($(basename "$0"))" $$ "$SCRIPT_ENTRY added to $NAT_START"
         fi
       else # nat-start does not exist
         true >"$NAT_START"
         {
           printf '%s\n' "#!/bin/sh"
-          printf '%s\n' "$SCRIPT_ENTRY"
+          printf '%s\n' "$SCRIPT_ENTRY # x3mRouting"
         } >"$NAT_START"
         chmod 755 "$NAT_START"
         logger -st "($(basename "$0"))" $$ "$SCRIPT_ENTRY added to $NAT_START"
@@ -1591,7 +1612,7 @@ if [ -n "$2" ]; then
     *) Error_Exit "ERROR: Invalid Source '$SRC_IFACE' and Destination ($DST_IFACE) combination." ;;
     esac
   fi
-  Set_Fwmark_Parms
+  Set_Fwmark_Params
 else
   Error_Exit "ERROR missing arg2 'dst_iface'"
 fi
@@ -1673,7 +1694,7 @@ if [ "$(echo $@ | grep -cw 'del')" -ge 1 ] || [ "$(echo $@ | grep -cw 'del=force
   Exit_Routine
 fi
 
-# 'src=' or 'src_range=' parms require exception processing
+# 'src=' or 'src_range=' params require exception processing
 if [ "$(echo "$@" | grep -c 'src=')" -gt 0 ] || [ "$(echo "$@" | grep -c 'src_range=')" -gt 0 ]; then
   Process_Src_Option $@
   Exit_Routine
