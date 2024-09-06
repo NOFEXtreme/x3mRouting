@@ -392,8 +392,8 @@ check_files_for_rp_filter_entry() {
     fi
 
     # Add the $rp_filter to the file if not already present
-    if ! grep -Fxq "$entry" "$file"; then
-      echo "$entry # x3mRouting" >> "$file"
+    if ! grep -Fq "$entry" "$file"; then
+      echo "$entry # x3mRouting for ipset name $IPSET_NAME" >> "$file"
       logger -st "($(basename "$0"))" $$ "$entry added to $file"
     fi
   done
@@ -771,7 +771,6 @@ Delete_Ipset_List() {
     logger -t "($(basename "$0"))" $$ "Checking $NAT_START..."
     if [ "$(grep -cw "$IPSET_NAME" "$NAT_START")" -ge 1 ]; then # if true, then one or more lines exist
       sed -i "\~\b$IPSET_NAME\b~d" "$NAT_START"
-      sed -i "\|echo 2 >/proc/sys/net/ipv4/conf/wgc|d" "$NAT_START"
       logger -t "($(basename "$0"))" $$ "Script entry for $IPSET_NAME deleted from $NAT_START"
     else
       logger -t "($(basename "$0"))" $$ "No $IPSET_NAME references found in $NAT_START."
@@ -782,16 +781,24 @@ Delete_Ipset_List() {
   # Check for rp_filter entry in /jffs/scripts/wgclient-start and remove if found
   if [ -s "$WGCLIENT_START" ]; then
     logger -t "($(basename "$0"))" $$ "Checking $WGCLIENT_START..."
-    sed -i "\|echo 2 >/proc/sys/net/ipv4/conf/wgc|d" "$WGCLIENT_START"
-    logger -t "($(basename "$0"))" $$ "Script entry for WGClient deleted from $WGCLIENT_START"
+    if [ "$(grep -cw "$IPSET_NAME" "$WGCLIENT_START")" -ge 1 ]; then # if true, then one or more lines exist
+      sed -i "\~\b$IPSET_NAME\b~d" "$WGCLIENT_START"
+      logger -t "($(basename "$0"))" $$ "Script entry for WGClient deleted from $WGCLIENT_START"
+    else
+      logger -t "($(basename "$0"))" $$ "No $IPSET_NAME references found in $WGCLIENT_START."
+    fi
     Check_For_Shebang "$WGCLIENT_START"
   fi
 
   # Check for rp_filter entry in /jffs/scripts/wan-event and remove if found
   if [ -s "$WAN_EVENT" ]; then
     logger -t "($(basename "$0"))" $$ "Checking $WAN_EVENT..."
-    sed -i "\|echo 2 >/proc/sys/net/ipv4/conf/wgc|d" "$WAN_EVENT"
-    logger -t "($(basename "$0"))" $$ "Script entry for WGClient deleted from $WAN_EVENT"
+    if [ "$(grep -cw "$IPSET_NAME" "$WAN_EVENT")" -ge 1 ]; then # if true, then one or more lines exist
+      sed -i "\~\b$IPSET_NAME\b~d" "$WAN_EVENT"
+      logger -t "($(basename "$0"))" $$ "Script entry for WGClient deleted from $WAN_EVENT"
+    else
+      logger -t "($(basename "$0"))" $$ "No $IPSET_NAME references found in $WAN_EVENT."
+    fi
     Check_For_Shebang "$WAN_EVENT"
   fi
 
