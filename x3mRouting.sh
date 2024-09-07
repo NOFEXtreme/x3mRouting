@@ -836,14 +836,14 @@ Delete_Ipset_List() {
   fi
 
   logger -t "($(basename "$0"))" $$ "Checking PREROUTING iptables rules..."
-  FWMARK=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 "$IPSET_NAME " | awk '{print $16}' | tr -d '\r')
+  FWMARK=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$IPSET_NAME" | awk '{if ($0 ~ /source IP range/) print $20; else print $16}' | tr -d '\r')
   if [ -n "$FWMARK" ]; then
     # Delete PREROUTING Rules for Normal IPSET routing
     iptables -nvL PREROUTING -t mangle --line | grep "br0" | grep "$IPSET_NAME " | grep "match-set" | awk '{print $1, $12}' | sort -nr | while read -r CHAIN_NUM IPSET_NAME; do
       iptables -t mangle -D PREROUTING "$CHAIN_NUM" && logger -t "($(basename "$0"))" $$ "Deleted PREROUTING Chain $CHAIN_NUM for IPSET List $IPSET_NAME"
     done
     # Delete the fwmark priority if no IPSET lists are using it
-    FWMARK_FLAG=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 "$FWMARK" | awk '{print $16}' | tr -d '\r' ' ')
+    FWMARK_FLAG=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$IPSET_NAME" | awk '{if ($0 ~ /source IP range/) print $20; else print $16}' | tr -d '\r')
     if [ -z "$FWMARK_FLAG" ]; then
       ip rule del fwmark "$FWMARK/$FWMARK" 2>/dev/null && logger -t "($(basename "$0"))" $$ "Deleted fwmark $FWMARK/$FWMARK"
     fi
@@ -1324,10 +1324,8 @@ Check_Second_Parm() {
 }
 
 Define_IFACE() {
-
   ### Define interface/bitmask to route traffic to. Use existing PREROUTING rule for IPSET to determine FWMARK.
-  FWMARK=$(iptables -nvL PREROUTING -t mangle --line | grep "br0" | grep -m 1 " $IPSET_NAME" | awk '{print $16}')
-
+  FWMARK=$(iptables -nvL PREROUTING -t mangle --line | grep "br0" | grep -m 1 -w "$IPSET_NAME" | awk '{if ($0 ~ /source IP range/) print $20; else print $16}')
   [ -n "$FWMARK" ] || Error_Exit "Error! Mandatory PREROUTING rule for IPSET name $IPSET_NAME does not exist."
 
   TAG_MARK="$FWMARK/$FWMARK"
