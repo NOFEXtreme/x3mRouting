@@ -8,9 +8,8 @@
 # Modified by NOFEXtream: https://github.com/NOFEXtreme/x3mRouting/blob/master/x3mRouting.sh
 # Added WireGuard support and limited the script to handling only HTTP and HTTPS traffic.
 # Currently not working with WireGuard:
-#  - VPN Bypass Routing
 #  - VPN Server to VPN Client Routing
-# Date: 27-August-2024
+# Date: 08-September-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -43,7 +42,7 @@
 #              2) VPN Bypass Routing
 #                 - Use this SRC and DST combination to bypass the VPN Client for an IPSET list and
 #                   route to the WAN interface:
-#                   1 0, 2 0, 3 0, 4 0, 5 0
+#                   1 0, 2 0, 3 0, 4 0, 5 0, 11 0, 12 0, 13 0, 14 0, 15 0
 #            ** src/dst NOTES End **
 #            {ipset_name}
 #            ['autoscan='keyword1[,keyword2]...] # Scans for keywords and creates IPSET list using
@@ -61,8 +60,6 @@
 #            ['del=force'] # Force delete the IPSET list and all configuration settings if only
 #                          # a shebang exists. **Will not** prompt for permission before deleting a
 #                          # file if only a shebang exists.
-#
-# TODO: Fix VPN Bypass routing functionality for WireGuard clients.
 #
 #_____________________________________________________________________________________________________________
 #
@@ -195,17 +192,17 @@ Chk_Entware() {
 
 ### Define interface/bitmask to route traffic to below
 Set_Fwmark_Params() {
-  FWMARK_WAN="0x8000/0x8000"
-  FWMARK_OVPNC1="0x1000/0x1000"
-  FWMARK_OVPNC2="0x2000/0x2000"
-  FWMARK_OVPNC3="0x4000/0x4000"
-  FWMARK_OVPNC4="0x7000/0x7000"
-  FWMARK_OVPNC5="0x3000/0x3000"
-  FWMARK_WGC1="0xa000/0xa000"
-  FWMARK_WGC2="0xb000/0xb000"
-  FWMARK_WGC3="0xc000/0xc000"
-  FWMARK_WGC4="0xd000/0xd000"
-  FWMARK_WGC5="0xe000/0xe000"
+  FWMARK_WAN="0x8000/0xf000"
+  FWMARK_OVPNC1="0x1000/0xf000"
+  FWMARK_OVPNC2="0x2000/0xf000"
+  FWMARK_OVPNC3="0x4000/0xf000"
+  FWMARK_OVPNC4="0x7000/0xf000"
+  FWMARK_OVPNC5="0x3000/0xf000"
+  FWMARK_WGC1="0xa000/0xf000"
+  FWMARK_WGC2="0xb000/0xf000"
+  FWMARK_WGC3="0xc000/0xf000"
+  FWMARK_WGC4="0xd000/0xf000"
+  FWMARK_WGC5="0xe000/0xf000"
 }
 
 Set_IP_Rule() {
@@ -213,16 +210,16 @@ Set_IP_Rule() {
 
   case "$vpn_id" in
   0) priority=9980 ;; # WAN
-  1) priority=9990 ;; # OVPNC1
-  2) priority=9991 ;; # OVPNC2
-  3) priority=9992 ;; # OVPNC3
-  4) priority=9993 ;; # OVPNC4
-  5) priority=9994 ;; # OVPNC5
-  11) priority=9995 ;; # WGC1
-  12) priority=9996 ;; # WGC2
-  13) priority=9997 ;; # WGC3
-  14) priority=9998 ;; # WGC4
-  15) priority=9999 ;; # WGC5
+  1) priority=9999 ;; # OVPNC1
+  2) priority=9998 ;; # OVPNC2
+  3) priority=9997 ;; # OVPNC3
+  4) priority=9996 ;; # OVPNC4
+  5) priority=9995 ;; # OVPNC5
+  11) priority=9994 ;; # WGC1
+  12) priority=9993 ;; # WGC2
+  13) priority=9992 ;; # WGC3
+  14) priority=9991 ;; # WGC4
+  15) priority=9990 ;; # WGC5
   *) Error_Exit "ERROR $vpn_id should be 0-WAN or 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client" ;;
   esac
 
@@ -314,8 +311,8 @@ Create_Routing_Rules() {
 
   IPSET_NAME=$1
 
-  iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK" 2>/dev/null && logger -st "($(basename "$0"))" $$ Selective Routing Rule via "$TARGET_DESC" deleted for "$IPSET_NAME" fwmark "$TAG_MARK"
-  iptables -t mangle -A PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK" && logger -st "($(basename "$0"))" $$ Selective Routing Rule via "$TARGET_DESC" created for "$IPSET_NAME" fwmark "$TAG_MARK"
+  iptables -t mangle -D PREROUTING -i br0 -m set --match-set "$IPSET_NAME" dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark "$TAG_MARK" 2>/dev/null && logger -st "($(basename "$0"))" $$ Selective Routing Rule via "$TARGET_DESC" deleted for "$IPSET_NAME" fwmark "$TAG_MARK"
+  iptables -t mangle -A PREROUTING -i br0 -m set --match-set "$IPSET_NAME" dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark "$TAG_MARK" && logger -st "($(basename "$0"))" $$ Selective Routing Rule via "$TARGET_DESC" created for "$IPSET_NAME" fwmark "$TAG_MARK"
 
 }
 
@@ -470,8 +467,8 @@ Check_Files_For_Entries() {
     VPNID=$SRC_IFACE
   fi
 
-  IPTABLES_DEL_ENTRY="iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -m set --match-set $IPSET_NAME dst -j MARK --set-mark $TAG_MARK 2>/dev/null"
-  IPTABLES_ADD_ENTRY="iptables -t mangle -A PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -m set --match-set $IPSET_NAME dst -j MARK --set-mark $TAG_MARK"
+  IPTABLES_DEL_ENTRY="iptables -t mangle -D PREROUTING -i br0 -m set --match-set $IPSET_NAME dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark $TAG_MARK 2>/dev/null"
+  IPTABLES_ADD_ENTRY="iptables -t mangle -A PREROUTING -i br0 -m set --match-set $IPSET_NAME dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark $TAG_MARK"
   VPNC_UP_FILE="$SCRIPT_DIR/vpnclient${VPNID}-route-up"
   VPNC_DOWN_FILE="$SCRIPT_DIR/vpnclient${VPNID}-route-pre-down"
 
@@ -597,8 +594,8 @@ Process_Src_Option() {
       SCRIPT_ENTRY="sh $SCRIPT_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src=${SRC}"
       [ "$DIR" != "/opt/tmp" ] && SCRIPT_ENTRY="sh $SCRIPT_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src=${SRC} dir=${DIR}"
     fi
-    IPTABLES_DEL_ENTRY="iptables -t mangle -D PREROUTING -i br0 --src $SRC -p tcp -m multiport --dports 80,443 -m set --match-set $IPSET_NAME dst -j MARK --set-mark $TAG_MARK 2>/dev/null"
-    IPTABLES_ADD_ENTRY="iptables -t mangle -A PREROUTING -i br0 --src $SRC -p tcp -m multiport --dports 80,443 -m set --match-set $IPSET_NAME dst -j MARK --set-mark $TAG_MARK"
+    IPTABLES_DEL_ENTRY="iptables -t mangle -D PREROUTING -i br0 --src $SRC -m set --match-set $IPSET_NAME dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark $TAG_MARK 2>/dev/null"
+    IPTABLES_ADD_ENTRY="iptables -t mangle -A PREROUTING -i br0 --src $SRC -m set --match-set $IPSET_NAME dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark $TAG_MARK"
     # Create routing rules
     eval "$IPTABLES_DEL_ENTRY"
     eval "$IPTABLES_ADD_ENTRY"
@@ -613,8 +610,8 @@ Process_Src_Option() {
       SCRIPT_ENTRY="sh $SCRIPT_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src_range=${SRC_RANGE}"
       [ "$DIR" != "/opt/tmp" ] && SCRIPT_ENTRY="sh $SCRIPT_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src_range=${SRC_RANGE} dir=${DIR}"
     fi
-    IPTABLES_DEL_ENTRY="iptables -t mangle -D PREROUTING -i br0 -m iprange --src-range $SRC_RANGE -p tcp -m multiport --dports 80,443 -m set --match-set $IPSET_NAME dst -j MARK --set-mark $TAG_MARK 2>/dev/null"
-    IPTABLES_ADD_ENTRY="iptables -t mangle -A PREROUTING -i br0 -m iprange --src-range $SRC_RANGE -p tcp -m multiport --dports 80,443 -m set --match-set $IPSET_NAME dst -j MARK --set-mark $TAG_MARK"
+    IPTABLES_DEL_ENTRY="iptables -t mangle -D PREROUTING -i br0 -m iprange --src-range $SRC_RANGE -m set --match-set $IPSET_NAME dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark $TAG_MARK 2>/dev/null"
+    IPTABLES_ADD_ENTRY="iptables -t mangle -A PREROUTING -i br0 -m iprange --src-range $SRC_RANGE -m set --match-set $IPSET_NAME dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark $TAG_MARK"
     # Create routing rules
     eval "$IPTABLES_DEL_ENTRY"
     eval "$IPTABLES_ADD_ENTRY"
@@ -854,7 +851,7 @@ Delete_Ipset_List() {
     # Delete the fwmark priority if no IPSET lists are using it
     for FWMARK in $FWMARKS; do
       if ! iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$FWMARK"; then
-        ip rule del fwmark "$FWMARK/$FWMARK" 2>/dev/null && logger -t "($(basename "$0"))" $$ "Deleted fwmark $FWMARK/$FWMARK"
+        ip rule del fwmark "$FWMARK" 2>/dev/null && logger -t "($(basename "$0"))" $$ "Deleted fwmark $FWMARK"
       fi
     done
   fi
@@ -1024,8 +1021,8 @@ VPN_Server_to_VPN_Client() {
   CLIENT="client=$VPN_CLIENT_INSTANCE"
   SCRIPT_ENTRY="sh $SCRIPT_DIR/x3mRouting.sh $SERVER $CLIENT"
   VPN_SERVER_SUBNET="$(nvram get vpn_server"${VPN_SERVER_INSTANCE}"_sn)/24"
-  IPTABLES_DEL_ENTRY="iptables -t nat -D POSTROUTING -s \"\$(nvram get vpn_server${VPN_SERVER_INSTANCE}_sn)\"/24 -p tcp -m multiport --dports 80,443 -o $IFACE -j MASQUERADE 2>/dev/null"
-  IPTABLES_ADD_ENTRY="iptables -t nat -A POSTROUTING -s \"\$(nvram get vpn_server${VPN_SERVER_INSTANCE}_sn)\"/24 -p tcp -m multiport --dports 80,443 -o $IFACE -j MASQUERADE"
+  IPTABLES_DEL_ENTRY="iptables -t nat -D POSTROUTING -s \"\$(nvram get vpn_server${VPN_SERVER_INSTANCE}_sn)\"/24 -o $IFACE -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null"
+  IPTABLES_ADD_ENTRY="iptables -t nat -A POSTROUTING -s \"\$(nvram get vpn_server${VPN_SERVER_INSTANCE}_sn)\"/24 -o $IFACE -p tcp -m multiport --dports 80,443 -j MASQUERADE"
   VPNC_UP_FILE="$SCRIPT_DIR/vpnclient${VPN_CLIENT_INSTANCE}-route-up"
   VPNC_DOWN_FILE="$SCRIPT_DIR/vpnclient${VPN_CLIENT_INSTANCE}-route-pre-down"
   POLICY_RULE_WITHOUT_NAME="${VPN_SERVER_SUBNET}>>VPN"
@@ -1046,8 +1043,8 @@ VPN_Server_to_VPN_Client() {
         if [ "$(grep -cw "$IPTABLES_ENTRY" "$VPNC_UP_FILE")" -eq 0 ]; then # if true, add entry
           echo "$IPTABLES_ENTRY" >>"$VPNC_UP_FILE"
           # Implement routing rules
-          iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443 -o "$IFACE" -j MASQUERADE 2>/dev/null
-          iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443 -o "$IFACE" -j MASQUERADE
+          iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
+          iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE
         fi
       done
     else # vpnclientX-route-up file does not exist
@@ -1058,8 +1055,8 @@ VPN_Server_to_VPN_Client() {
         echo "$IPTABLES_ADD_ENTRY"
       } >>"$VPNC_UP_FILE"
       # Implement routing rules
-      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443 -o "$IFACE" -j MASQUERADE 2>/dev/null
-      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443 -o "$IFACE" -j MASQUERADE
+      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
+      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE
     fi
     # vpnclientX-route-pre-down File
     if [ -s "$VPNC_DOWN_FILE" ]; then
@@ -1124,7 +1121,7 @@ VPN_Server_to_VPN_Client() {
       fi
     fi
   else # 'del' or 'del=force' parameter passed. Delete routing and routing rules in vpn server up down scripts.
-    iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443 -o "$IFACE" -j MASQUERADE 2>/dev/null
+    iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
 
     # vpnserverX-up file
     if [ -s "$VPNC_UP_FILE" ]; then #file exists
@@ -1201,12 +1198,12 @@ VPN_Server_to_IPSET() {
   esac
 
   # POSTROUTING CHAIN
-  IPTABLES_POSTROUTING_DEL_ENTRY="iptables -t nat -D POSTROUTING -s $VPN_SERVER_SUBNET -p tcp -m multiport --dports 80,443 -o $IFACE -j MASQUERADE 2>/dev/null"
-  IPTABLES_POSTROUTING_ADD_ENTRY="iptables -t nat -A POSTROUTING -s $VPN_SERVER_SUBNET -p tcp -m multiport --dports 80,443 -o $IFACE -j MASQUERADE"
+  IPTABLES_POSTROUTING_DEL_ENTRY="iptables -t nat -D POSTROUTING -s $VPN_SERVER_SUBNET -o $IFACE -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null"
+  IPTABLES_POSTROUTING_ADD_ENTRY="iptables -t nat -A POSTROUTING -s $VPN_SERVER_SUBNET -o $IFACE -p tcp -m multiport --dports 80,443 -j MASQUERADE"
 
   # PREROUTING CHAIN
-  IPTABLES_PREROUTING_DEL_ENTRY="iptables -t mangle -D PREROUTING -i $VPN_SERVER_TUN -p tcp -m multiport --dports 80,443 -m set --match-set $IPSET_NAME dst -j MARK --set-mark $TAG_MARK 2>/dev/null"
-  IPTABLES_PREROUTING_ADD_ENTRY="iptables -t mangle -A PREROUTING -i $VPN_SERVER_TUN -p tcp -m multiport --dports 80,443 -m set --match-set $IPSET_NAME dst -j MARK --set-mark $TAG_MARK"
+  IPTABLES_PREROUTING_DEL_ENTRY="iptables -t mangle -D PREROUTING -i $VPN_SERVER_TUN -m set --match-set $IPSET_NAME dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark $TAG_MARK 2>/dev/null"
+  IPTABLES_PREROUTING_ADD_ENTRY="iptables -t mangle -A PREROUTING -i $VPN_SERVER_TUN -m set --match-set $IPSET_NAME dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark $TAG_MARK"
 
   # VPN Client Up/Down files
   VPNC_UP_FILE="$SCRIPT_DIR/vpnclient${VPN_CLIENT_INSTANCE}-route-up"
@@ -1220,10 +1217,10 @@ VPN_Server_to_IPSET() {
           echo "$IPTABLES_ENTRY" >>"$VPNC_UP_FILE" && logger -t "($(basename "$0"))" $$ "iptables entry added to $VPNC_UP_FILE"
         fi
       done
-      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443 -o "$IFACE" -j MASQUERADE 2>/dev/null
-      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443 -o "$IFACE" -j MASQUERADE
-      iptables -t mangle -D PREROUTING -i "$VPN_SERVER_TUN" -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK" 2>/dev/null
-      iptables -t mangle -A PREROUTING -i "$VPN_SERVER_TUN" -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK"
+      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
+      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE
+      iptables -t mangle -D PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark "$TAG_MARK" 2>/dev/null
+      iptables -t mangle -A PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark "$TAG_MARK"
     else # file does not exist
       true >"$VPNC_UP_FILE"
       {
@@ -1233,10 +1230,10 @@ VPN_Server_to_IPSET() {
         echo "$IPTABLES_PREROUTING_DEL_ENTRY"
         echo "$IPTABLES_PREROUTING_ADD_ENTRY"
       } >>"$VPNC_UP_FILE"
-      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443-o "$IFACE" -j MASQUERADE 2>/dev/null
-      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443 -o "$IFACE" -j MASQUERADE
-      iptables -t mangle -D PREROUTING -i "$VPN_SERVER_TUN" -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK" 2>/dev/null
-      iptables -t mangle -A PREROUTING -i "$VPN_SERVER_TUN" -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK"
+      iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
+      iptables -t nat -A POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE
+      iptables -t mangle -D PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark "$TAG_MARK" 2>/dev/null
+      iptables -t mangle -A PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark "$TAG_MARK"
     fi
 
     if [ -s "$VPNC_DOWN_FILE" ]; then
@@ -1256,13 +1253,13 @@ VPN_Server_to_IPSET() {
       logger -t "($(basename "$0"))" $$ "iptables entry added to $VPNC_DOWN_FILE"
     fi
   else # 'del' or 'del=force' option specified.
-    iptables -t mangle -D PREROUTING -i "$VPN_SERVER_TUN" -p tcp -m multiport --dports 80,443 -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$TAG_MARK" 2>/dev/null
-    iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -p tcp -m multiport --dports 80,443 -o "$IFACE" -j MASQUERADE 2>/dev/null
+    iptables -t mangle -D PREROUTING -i "$VPN_SERVER_TUN" -m set --match-set "$IPSET_NAME" dst -p tcp -m multiport --dports 80,443 -j MARK --set-mark "$TAG_MARK" 2>/dev/null
+    iptables -t nat -D POSTROUTING -s "$VPN_SERVER_SUBNET" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
 
     # VPN Client route-up File
     if [ -s "$VPNC_UP_FILE" ]; then
       # POSTROUTING
-      CMD="awk '\$5 == \"POSTROUTING\" && \$7 == \"$VPN_SERVER_SUBNET\" && \$9 == \"$IFACE\" && \$11 == \"MASQUERADE\" {next} {print \$0}' \"$VPNC_UP_FILE\" > \"$VPNC_UP_FILE.tmp\" && mv \"$VPNC_UP_FILE.tmp\" \"$VPNC_UP_FILE\""
+      CMD="awk '\$5 == \"POSTROUTING\" && \$7 == \"$VPN_SERVER_SUBNET\" && \$9 == \"$IFACE\" && \$17 == \"MASQUERADE\" {next} {print \$0}' \"$VPNC_UP_FILE\" > \"$VPNC_UP_FILE.tmp\" && mv \"$VPNC_UP_FILE.tmp\" \"$VPNC_UP_FILE\""
       eval "$CMD"
       # PREROUTING
       CMD="awk '\$5 == \"PREROUTING\" && \$7 == \"$VPN_SERVER_TUN\" && \$11 == \"$IPSET_NAME\" {next} {print \$0}' \"$VPNC_UP_FILE\" >  \"$VPNC_UP_FILE.tmp\" && mv \"$VPNC_UP_FILE.tmp\" \"$VPNC_UP_FILE\""
@@ -1274,7 +1271,7 @@ VPN_Server_to_IPSET() {
     # VPN Client route-pre-down File
     if [ -s "$VPNC_DOWN_FILE" ]; then
       # POSTROUTING
-      CMD="awk '\$5 == \"POSTROUTING\" && \$7 == \"$VPN_SERVER_SUBNET\" && \$9 == \"$IFACE\" && \$11 == \"MASQUERADE\" {next} {print \$0}' \"$VPNC_DOWN_FILE\" > \"$VPNC_DOWN_FILE.tmp\" && mv \"$VPNC_DOWN_FILE.tmp\" \"$VPNC_DOWN_FILE\""
+      CMD="awk '\$5 == \"POSTROUTING\" && \$7 == \"$VPN_SERVER_SUBNET\" && \$9 == \"$IFACE\" && \$17 == \"MASQUERADE\" {next} {print \$0}' \"$VPNC_DOWN_FILE\" > \"$VPNC_DOWN_FILE.tmp\" && mv \"$VPNC_DOWN_FILE.tmp\" \"$VPNC_DOWN_FILE\""
       eval "$CMD"
       # PREROUTING
       CMD="awk '\$5 == \"PREROUTING\" && \$7 == \"$VPN_SERVER_TUN\" && \$11 == \"$IPSET_NAME\" {next} {print \$0}' \"$VPNC_DOWN_FILE\" >  \"$VPNC_DOWN_FILE.tmp\" && mv \"$VPNC_DOWN_FILE.tmp\" \"$VPNC_DOWN_FILE\""
@@ -1335,27 +1332,25 @@ Check_Second_Parm() {
 
 Define_IFACE() {
   ### Define interface/bitmask to route traffic to. Use existing PREROUTING rule for IPSET to determine FWMARK.
-  FWMARK=$(iptables -nvL PREROUTING -t mangle --line | grep "br0" | grep -m 1 -w "$IPSET_NAME" | awk '{if ($0 ~ /source IP range/) print $23; else print $19}')
-  [ -n "$FWMARK" ] || Error_Exit "Error! Mandatory PREROUTING rule for IPSET name $IPSET_NAME does not exist."
+  TAG_MARK=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 "br0" | grep -w "$IPSET_NAME" | awk '{print ($0 ~ /source IP range/) ? $23 : $19}')
+  [ -z "$TAG_MARK" ] && Error_Exit "Error! Mandatory PREROUTING rule for IPSET name $IPSET_NAME does not exist."
 
-  TAG_MARK="$FWMARK/$FWMARK"
-  FWMARK_SUBSTR=$(echo "$FWMARK" | awk '{ string=substr($0, 3, 6); print string; }')
+  FWMARK_SUBSTR=$(echo "$TAG_MARK" | cut -c 3-6)
 
   case "$FWMARK_SUBSTR" in
-  8000) IFACE="br0" ;;
-  1000) IFACE="tun11" ;;
-  2000) IFACE="tun12" ;;
-  4000) IFACE="tun13" ;;
-  7000) IFACE="tun14" ;;
-  3000) IFACE="tun15" ;;
-  a000) IFACE="wgc1" ;;
-  b000) IFACE="wgc2" ;;
-  c000) IFACE="wgc3" ;;
-  d000) IFACE="wgc4" ;;
-  e000) IFACE="wgc5" ;;
-  *) Error_Exit "ERROR $1 should be 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client" ;;
+    8000) IFACE="br0" ;;
+    1000) IFACE="tun11" ;;
+    2000) IFACE="tun12" ;;
+    4000) IFACE="tun13" ;;
+    7000) IFACE="tun14" ;;
+    3000) IFACE="tun15" ;;
+    a000) IFACE="wgc1" ;;
+    b000) IFACE="wgc2" ;;
+    c000) IFACE="wgc3" ;;
+    d000) IFACE="wgc4" ;;
+    e000) IFACE="wgc5" ;;
+    *) Error_Exit "ERROR $1 should be 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client" ;;
   esac
-
 }
 
 #==================== End of Functions  =====================================
