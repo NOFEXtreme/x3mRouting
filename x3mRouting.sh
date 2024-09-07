@@ -836,17 +836,18 @@ Delete_Ipset_List() {
   fi
 
   logger -t "($(basename "$0"))" $$ "Checking PREROUTING iptables rules..."
-  FWMARK=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$IPSET_NAME" | awk '{if ($0 ~ /source IP range/) print $20; else print $16}' | tr -d '\r')
-  if [ -n "$FWMARK" ]; then
+  FWMARKS=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{if ($0 ~ /source IP range/) print $20; else print $16}' | tr -d '\r')
+  if [ -n "$FWMARKS" ]; then
     # Delete PREROUTING Rules for Normal IPSET routing
     iptables -nvL PREROUTING -t mangle --line | grep "br0" | grep "$IPSET_NAME " | grep "match-set" | awk '{print $1, $12}' | sort -nr | while read -r CHAIN_NUM IPSET_NAME; do
       iptables -t mangle -D PREROUTING "$CHAIN_NUM" && logger -t "($(basename "$0"))" $$ "Deleted PREROUTING Chain $CHAIN_NUM for IPSET List $IPSET_NAME"
     done
     # Delete the fwmark priority if no IPSET lists are using it
-    FWMARK_FLAG=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$FWMARK" | awk '{if ($0 ~ /source IP range/) print $20; else print $16}' | tr -d '\r')
-    if [ -z "$FWMARK_FLAG" ]; then
-      ip rule del fwmark "$FWMARK/$FWMARK" 2>/dev/null && logger -t "($(basename "$0"))" $$ "Deleted fwmark $FWMARK/$FWMARK"
-    fi
+    for FWMARK in $FWMARKS; do
+      if ! iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$FWMARK"; then
+        ip rule del fwmark "$FWMARK/$FWMARK" 2>/dev/null && logger -t "($(basename "$0"))" $$ "Deleted fwmark $FWMARK/$FWMARK"
+      fi
+    done
   fi
 
   # Delete PREROUTING Rule for VPN Server to IPSET & POSTROUTING Rule
@@ -1252,7 +1253,7 @@ VPN_Server_to_IPSET() {
     # VPN Client route-up File
     if [ -s "$VPNC_UP_FILE" ]; then
       # POSTROUTING
-      CMD="awk '\$5 == \"POSTROUTING\" && \$9 == \"vpn_server${VPN_SERVER_INSTANCE}_sn)\\\"/24\"  && \$11 == \"$IFACE\" && \$13 == \"MASQUERADE\" {next} {print \$0}' \"$VPNC_UP_FILE\" > \"$VPNC_UP_FILE.tmp\" && mv \"$VPNC_UP_FILE.tmp\" \"$VPNC_UP_FILE\""
+      CMD="awk '\$5 == \"POSTROUTING\" && \$7 == \"$VPN_SERVER_SUBNET\" && \$9 == \"$IFACE\" && \$11 == \"MASQUERADE\" {next} {print \$0}' \"$VPNC_UP_FILE\" > \"$VPNC_UP_FILE.tmp\" && mv \"$VPNC_UP_FILE.tmp\" \"$VPNC_UP_FILE\""
       eval "$CMD"
       # PREROUTING
       CMD="awk '\$5 == \"PREROUTING\" && \$7 == \"$VPN_SERVER_TUN\" && \$11 == \"$IPSET_NAME\" {next} {print \$0}' \"$VPNC_UP_FILE\" >  \"$VPNC_UP_FILE.tmp\" && mv \"$VPNC_UP_FILE.tmp\" \"$VPNC_UP_FILE\""
@@ -1264,7 +1265,7 @@ VPN_Server_to_IPSET() {
     # VPN Client route-pre-down File
     if [ -s "$VPNC_DOWN_FILE" ]; then
       # POSTROUTING
-      CMD="awk '\$5 == \"POSTROUTING\" && \$9 == \"vpn_server${VPN_SERVER_INSTANCE}_sn)\\\"/24\"  && \$11 == \"$IFACE\" && \$13 == \"MASQUERADE\" {next} {print \$0}' \"$VPNC_DOWN_FILE\" > \"$VPNC_DOWN_FILE.tmp\" && mv \"$VPNC_DOWN_FILE.tmp\" \"$VPNC_DOWN_FILE\""
+      CMD="awk '\$5 == \"POSTROUTING\" && \$7 == \"$VPN_SERVER_SUBNET\" && \$9 == \"$IFACE\" && \$11 == \"MASQUERADE\" {next} {print \$0}' \"$VPNC_DOWN_FILE\" > \"$VPNC_DOWN_FILE.tmp\" && mv \"$VPNC_DOWN_FILE.tmp\" \"$VPNC_DOWN_FILE\""
       eval "$CMD"
       # PREROUTING
       CMD="awk '\$5 == \"PREROUTING\" && \$7 == \"$VPN_SERVER_TUN\" && \$11 == \"$IPSET_NAME\" {next} {print \$0}' \"$VPNC_DOWN_FILE\" >  \"$VPNC_DOWN_FILE.tmp\" && mv \"$VPNC_DOWN_FILE.tmp\" \"$VPNC_DOWN_FILE\""
@@ -1583,9 +1584,6 @@ if [ "$(echo "$@" | grep -c 'ipset_name=')" -gt 0 ]; then
   else
     Error_Exit "ERROR! The save/restore file $DIR/$IPSET_NAME does not exist."
   fi
-
-  # If I reached this point, I have encountered a value I don't expect
-  Error_Exit "Encountered an invalid parameter: " $@
 fi
 ##############################################################################################
 # End of Special Processing for 'ipset_name=' parm
