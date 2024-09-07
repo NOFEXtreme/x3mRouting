@@ -843,7 +843,7 @@ Delete_Ipset_List() {
       iptables -t mangle -D PREROUTING "$CHAIN_NUM" && logger -t "($(basename "$0"))" $$ "Deleted PREROUTING Chain $CHAIN_NUM for IPSET List $IPSET_NAME"
     done
     # Delete the fwmark priority if no IPSET lists are using it
-    FWMARK_FLAG=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$IPSET_NAME" | awk '{if ($0 ~ /source IP range/) print $20; else print $16}' | tr -d '\r')
+    FWMARK_FLAG=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$FWMARK" | awk '{if ($0 ~ /source IP range/) print $20; else print $16}' | tr -d '\r')
     if [ -z "$FWMARK_FLAG" ]; then
       ip rule del fwmark "$FWMARK/$FWMARK" 2>/dev/null && logger -t "($(basename "$0"))" $$ "Deleted fwmark $FWMARK/$FWMARK"
     fi
