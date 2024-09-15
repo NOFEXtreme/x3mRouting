@@ -9,7 +9,7 @@
 # Added WireGuard support and limited the script to handling only HTTP and HTTPS traffic.
 # Currently not working with WireGuard:
 #  - VPN Server to VPN Client Routing
-# Date: 08-September-2024
+# Date: 15-September-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -95,7 +95,7 @@
 #
 # VPN Server to existing LAN routing rules for one or more IPSET lists
 #
-# x3mRouting {'server='1|2|3|all} {'ipset_name='IPSET[,IPSET]...} ['del'] ['del=force']
+# x3mRouting {'server='1|2|3|all} {'ipset_name='IPSET[,IPSET]...} ['protocol=udp|tcp'] ['port=port] ['ports=port[,port]...] ['del'] ['del=force']
 #_____________________________________________________________________________________________________________
 
 # Print between line beginning with '#__' to first blank line inclusive (source: Martineau)
@@ -679,11 +679,11 @@ Delete_Ipset_List() {
   # Delete PREROUTING Rule for VPN Server to IPSET & POSTROUTING Rule
   log_info "Checking POSTROUTING iptables rules..."
   for SERVER_TUN in tun21 tun22 wgs1; do
-    SERVER=$(echo "$SERVER_TUN" | awk '{ string=substr($0, 5, 5); print string; }')
+    SERVER=$(echo "$SERVER_TUN" | awk '{print substr($0, length($0), 1)}')
     TUN="$(iptables -nvL PREROUTING -t mangle --line | grep "$SERVER_TUN" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $7}')"
     if [ -n "$TUN" ]; then
       Define_IFACE "$IPSET_NAME"
-      VPN_CLIENT_INSTANCE=$(echo "$IFACE" | awk '{ string=substr($0, 5, 5); print string; }')
+      VPN_CLIENT_INSTANCE=$(echo "$IFACE" | awk '{print substr($0, length($0), 1)}')
       VPN_Server_to_IPSET "$SERVER" "$VPN_CLIENT_INSTANCE" "$IFACE" "$IPSET_NAME" "$TAG_MARK" "del"
     fi
   done
@@ -1148,7 +1148,7 @@ Check_Second_Parm() {
 
 Define_IFACE() {
   ### Define interface/bitmask to route traffic to. Use existing PREROUTING rule for IPSET to determine FWMARK.
-  TAG_MARK=$(iptables -nvL PREROUTING -t mangle --line | grep -m 1 "br0" | grep -w "$IPSET_NAME" | awk '{print $(NF)}')
+  TAG_MARK=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{print $(NF)}' | head -n 1)
   [ -z "$TAG_MARK" ] && Error_Exit "Mandatory PREROUTING rule for IPSET name $IPSET_NAME does not exist."
   FWMARK_SUBSTR=$(echo "$TAG_MARK" | cut -c 3-6)
 
