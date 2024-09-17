@@ -15,9 +15,9 @@
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
 #   on-going support and collaboration on this project!
 #
-#   Chk_Entware function and code to process the passing of params written by Martineau
+#   chk_entware function and code to process the passing of params written by Martineau
 #
-#   Thanks to Addamm00, author of Skynet, for the Check_Lock and Kill_Lock functions to prevent concurrent processing.
+#   Thanks to Addamm00, author of Skynet, for the Check_Lock and kill_lock functions to prevent concurrent processing.
 #   Source code can be found at https://github.com/Adamm00/IPSet_ASUS
 #
 ####################################################################################################
@@ -30,8 +30,8 @@
 #
 # Create IPSET List with Routing Rules:
 #
-# x3mRouting {src IFACE} (ALL|1|2|3|4|5|11|12|13|14|15)
-#            {dst IFACE} (0|1|2|3|4|5|11|12|13|14|15)
+# x3mRouting {src iface} (ALL|1|2|3|4|5|11|12|13|14|15)
+#            {dst iface} (0|1|2|3|4|5|11|12|13|14|15)
 #            ** src/dst NOTES Start **
 #              Valid SRC and DST Combinations
 #              1) VPN Client Routing
@@ -97,56 +97,68 @@
 #_____________________________________________________________________________________________________________
 
 # Print between line beginning with '#__' to first blank line inclusive (source: Martineau)
-ShowHelp() {
+show_help() {
   awk '/^#__/{f=1} f{print; if (!NF) exit}' "$0" | more
 }
 
 # Need assistance!???
 if [ "$1" = "help" ] || [ "$1" = "-h" ]; then
-  ShowHelp
+  show_help
   exit 0
 fi
 
 VPN_IDS="1 2 3 4 5 11 12 13 14 15"
 COLOR_RED='\033[0;31m'
 COLOR_WHITE='\033[0m'
-COLOR_GREEN='\e[0;32m'
+COLOR_GREEN='\033[0;32m'
 
-SCR_NAME=$(basename "$0" | sed 's/.sh//')         # - Script name without .sh
-SCR_DIR="$(cd "$(dirname "$0")" && pwd)"          # - Script directory (absolute path).
-LOCK_FILE="/tmp/x3mRouting.lock"                  # - Lock file to prevent multiple instances.
-NAT_START="/jffs/scripts/nat-start"               # - NAT initialization (e.g., firewall restart).
-WG_START="/jffs/scripts/wgclient-start"           # - WireGuard client startup.
-WAN_EVENT="/jffs/scripts/wan-event"               # - WAN events (e.g., IP changes).
-DNSMASQ_CONF_ADD="/jffs/configs/dnsmasq.conf.add" # - dnsmasq configuration file.
+SCR_NAME=$(basename "$0" | sed 's/.sh//')         # Script name without .sh
+SCR_DIR="$(cd "$(dirname "$0")" && pwd)"          # Script directory (absolute path)
+LOCK_FILE="/tmp/x3mRouting.lock"                  # Lock file to prevent multiple instances
+NAT_START="/jffs/scripts/nat-start"               # NAT initialization (e.g., firewall restart)
+WG_START="/jffs/scripts/wgclient-start"           # WireGuard client startup
+WAN_EVENT="/jffs/scripts/wan-event"               # WAN events (e.g., IP changes)
+DNSMASQ_CONF_ADD="/jffs/configs/dnsmasq.conf.add" # dnsmasq configuration file
 
 log_info() {
   logger -st "($(basename "$0"))" "$$ $*"
 }
 
-Kill_Lock() {
-  if [ -f "$LOCK_FILE" ] && [ -d "/proc/$(sed -n '2p' $LOCK_FILE)" ]; then
-    log_info "Killing Locked Processes ($(sed -n '1p' $LOCK_FILE)) (pid=$(sed -n '2p' $LOCK_FILE))"
-    log_info "$(ps | awk -v pid="$(sed -n '2p' $LOCK_FILE)" '$1 == pid')"
-    kill "$(sed -n '2p' $LOCK_FILE)"
-    rm -rf $LOCK_FILE
+exit_routine() {
+  if [ "$lockx3mRouting" = "true" ]; then release_lock; fi
+  log_info "Completed Script Execution"
+  exit 0
+}
+
+error_exit() {
+  if [ "$lockx3mRouting" = "true" ]; then release_lock; fi
+  log_info "ERROR! $*"
+  exit 1
+}
+
+kill_lock() {
+  if [ -f "$LOCK_FILE" ] && [ -d "/proc/$(sed -n '2p' "$LOCK_FILE")" ]; then
+    log_info "Killing Locked Processes ($(sed -n '1p' "$LOCK_FILE")) (pid=$(sed -n '2p' "$LOCK_FILE"))"
+    log_info "$(ps | awk -v pid="$(sed -n '2p' "$LOCK_FILE")" '$1 == pid')"
+    kill "$(sed -n '2p' "$LOCK_FILE")"
+    rm -f "$LOCK_FILE"
     echo
   fi
 }
 
-Check_Lock() {
+check_lock() {
   TRIES=0
   MAX_TRIES=60
   while [ "$TRIES" -lt "$MAX_TRIES" ]; do
     if [ -f "$LOCK_FILE" ]; then
-      log_info "x3mRouting Lock File in use by PID $(sed -n '2p' $LOCK_FILE) - wait time $(((MAX_TRIES * 3) - (TRIES * 3) - 3)) secs left"
+      log_info "x3mRouting Lock File in use by PID $(sed -n '2p' "$LOCK_FILE") - wait time $(((MAX_TRIES * 3) - (TRIES * 3) - 3)) secs left"
       sleep 3
       TRIES=$((TRIES + 1))
-      [ "$TRIES" -eq $((MAX_TRIES - 1)) ] && Kill_Lock # automatically kill lock once MAX_TRIES is reached
+      [ "$TRIES" -eq $((MAX_TRIES - 1)) ] && kill_lock # Automatically kill lock once MAX_TRIES is reached
     else
-      echo "$@" >$LOCK_FILE
-      echo "$$" >>$LOCK_FILE
-      date +%s >>$LOCK_FILE
+      echo "$@" >"$LOCK_FILE"
+      echo "$$" >>"$LOCK_FILE"
+      date +%s >>"$LOCK_FILE"
       lockx3mRouting="true"
       TRIES="$MAX_TRIES"
     fi
@@ -157,89 +169,35 @@ release_lock() {
   [ -f "$LOCK_FILE" ] && rm -f "$LOCK_FILE"
 }
 
-error_exit() {
-  if [ "$lockx3mRouting" = "true" ]; then release_lock; fi
-  log_info "ERROR! $*"
-  exit 1
-}
-
-exit_routine() {
-  if [ "$lockx3mRouting" = "true" ]; then release_lock; fi
-  log_info "Completed Script Execution"
-  exit 0
-}
-
-Chk_Entware() {
-  # ARGS [wait attempts] [specific_entware_utility]
-  READY=1          # Assume Entware Utilities are NOT available
-  ENTWARE_UTILITY= # Specific Entware utility to search for
-  MAX_TRIES=30
-
-  if [ -n "$2" ] && [ "$2" -eq "$2" ] 2>/dev/null; then
-    MAX_TRIES="$2"
-  elif [ -z "$2" ] && [ "$1" -eq "$1" ] 2>/dev/null; then
-    MAX_TRIES="$1"
-  fi
-
-  if [ -n "$1" ] && ! [ "$1" -eq "$1" ] 2>/dev/null; then
-    ENTWARE_UTILITY="$1"
-  fi
-
-  # Wait up to (default) 30 seconds to see if Entware utilities available.....
-  TRIES="0"
+chk_entware() {
+  MAX_TRIES="${1:-30}"
+  TRIES=0
 
   while [ "$TRIES" -lt "$MAX_TRIES" ]; do
     if [ -f "/opt/bin/opkg" ]; then
-      if [ -n "$ENTWARE_UTILITY" ]; then # Specific Entware utility installed?
-        if [ -n "$(opkg list-installed "$ENTWARE_UTILITY")" ]; then
-          READY="0" # Specific Entware utility found
-        else
-          # Not all Entware utilities exists as a stand-alone package e.g. 'find' is in package 'findutils'
-          if [ -d /opt ] && [ -n "$(find /opt/ -name "$ENTWARE_UTILITY")" ]; then
-            READY="0" # Specific Entware utility found
-          fi
-        fi
-      else
-        READY="0" # Entware utilities ready
-      fi
-      break
+      return 0 # Entware utilities ready
     fi
     sleep 1
-    log_info "Entware $ENTWARE_UTILITY not available - wait time $((MAX_TRIES - TRIES - 1)) secs left"
+    log_info "Entware not available - wait time $((MAX_TRIES - TRIES - 1)) secs left"
     TRIES=$((TRIES + 1))
   done
-  return "$READY"
-}
-
-# Define fwmark/bitmask to route traffic through the interfaces below.
-Set_Fwmark_Params() {
-  FWMARK_WAN="0x8000/0xf000"    # Main WAN connection
-  FWMARK_OVPNC1="0x1000/0xf000" # OpenVPN connection 1
-  FWMARK_OVPNC2="0x2000/0xf000" # OpenVPN connection 2
-  FWMARK_OVPNC3="0x4000/0xf000" # OpenVPN connection 3
-  FWMARK_OVPNC4="0x7000/0xf000" # OpenVPN connection 4
-  FWMARK_OVPNC5="0x3000/0xf000" # OpenVPN connection 5
-  FWMARK_WGC1="0xa000/0xf000"   # WireGuard connection 1
-  FWMARK_WGC2="0xb000/0xf000"   # WireGuard connection 2
-  FWMARK_WGC3="0xc000/0xf000"   # WireGuard connection 3
-  FWMARK_WGC4="0xd000/0xf000"   # WireGuard connection 4
-  FWMARK_WGC5="0xe000/0xf000"   # WireGuard connection 5
+  return 1 # Entware utilities not available
 }
 
 set_ip_rule() {
   case "$DST_IFACE" in
-  0) priority=9980 ;;  # WAN
-  1) priority=9999 ;;  # OVPNC1
-  2) priority=9998 ;;  # OVPNC2
-  3) priority=9997 ;;  # OVPNC3
-  4) priority=9996 ;;  # OVPNC4
-  5) priority=9995 ;;  # OVPNC5
-  11) priority=9994 ;; # WGC1
-  12) priority=9993 ;; # WGC2
-  13) priority=9992 ;; # WGC3
-  14) priority=9991 ;; # WGC4
-  15) priority=9990 ;; # WGC5
-  *) error_exit "$DST_IFACE should be 0-WAN or 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client" ;;
+    0) priority=9980 ;;  # WAN
+    1) priority=9999 ;;  # OVPNC1
+    2) priority=9998 ;;  # OVPNC2
+    3) priority=9997 ;;  # OVPNC3
+    4) priority=9996 ;;  # OVPNC4
+    5) priority=9995 ;;  # OVPNC5
+    11) priority=9994 ;; # WGC1
+    12) priority=9993 ;; # WGC2
+    13) priority=9992 ;; # WGC3
+    14) priority=9991 ;; # WGC4
+    15) priority=9990 ;; # WGC5
+    *) error_exit "$DST_IFACE should be 0-WAN or 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client" ;;
   esac
 
   if ! ip rule | grep -q "$TAG_MARK"; then
@@ -251,8 +209,7 @@ set_ip_rule() {
 Create_Ipset_List() {
   METHOD=$1
 
-  Chk_Entware 120
-  if [ "$READY" -eq 1 ]; then error_exit "Entware not ready. Unable to access ipset save/restore location"; fi
+  if ! chk_entware 120; then error_exit "Entware not ready. Unable to access ipset save/restore location"; fi
   if [ "$(ipset list -n "$IPSET_NAME" 2>/dev/null)" != "$IPSET_NAME" ]; then # does ipset list exist?
     if [ -s "$DIR/$IPSET_NAME" ]; then                                       # does ipset restore file exist?
       if [ "$METHOD" = "DNSMASQ" ]; then
@@ -354,13 +311,13 @@ Check_For_Shebang() {
       printf '[1-2]: '
       read -r "OPTION"
       case "$OPTION" in
-      1)
-        rm "$CLIENTX_FILE"
-        echo "$CLIENTX_FILE file deleted"
-        return
-        ;;
-      2) return ;;
-      *) echo "[*] $OPTION Isn't An Option!" ;;
+        1)
+          rm "$CLIENTX_FILE"
+          echo "$CLIENTX_FILE file deleted"
+          return
+          ;;
+        2) return ;;
+        *) echo "[*] $OPTION Isn't An Option!" ;;
       esac
     elif [ "$del_flag" = "FORCE" ]; then # force delete file w/o prompt
       rm "$CLIENTX_FILE"
@@ -391,9 +348,9 @@ check_files_for_entries() {
   param=$1
 
   if [ "$(echo "$param" | grep -c "Manual")" -ge 1 ]; then # 1 parm passed
-    script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME"
+    script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $PROTOCOL_PORT_PARAMS"
   else # param passed e.g. dnsmasq=, aws_region=, asnum=, ip=
-    script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $param"
+    script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $param $PROTOCOL_PORT_PARAMS"
   fi
 
   if [ "$DIR" != "/opt/tmp" ]; then
@@ -465,12 +422,12 @@ process_src_option() {
   # Manual Method to create ipset list if IP address specified
   if [ -n "$src" ]; then
     if [ "$X3M_METHOD" = "Manual" ]; then #
-      script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME src=${src}"
-      [ "$DIR" != "/opt/tmp" ] && script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME src=${src} dir=${DIR}"
+      script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME src=${src} $PROTOCOL_PORT_PARAMS"
+      [ "$DIR" != "/opt/tmp" ] && script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME src=${src} $PROTOCOL_PORT_PARAMS dir=${DIR}"
       Manual_Method "$@"
     else
-      script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src=${src}"
-      [ "$DIR" != "/opt/tmp" ] && script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src=${src} dir=${DIR}"
+      script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src=${src} $PROTOCOL_PORT_PARAMS"
+      [ "$DIR" != "/opt/tmp" ] && script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src=${src} $PROTOCOL_PORT_PARAMS dir=${DIR}"
     fi
     IPT_DEL_ENTRY="iptables -t mangle -D PREROUTING -i br0 --src $src -m set --match-set $IPSET_NAME dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK 2>/dev/null"
     IPT_ADD_ENTRY="iptables -t mangle -A PREROUTING -i br0 --src $src -m set --match-set $IPSET_NAME dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK"
@@ -481,12 +438,12 @@ process_src_option() {
 
   if [ -n "$src_range" ]; then
     if [ "$X3M_METHOD" = "Manual" ]; then
-      script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME src_range=${src_range}"
-      [ "$DIR" != "/opt/tmp" ] && script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME src_range=${src_range} dir=${DIR}"
+      script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME src_range=${src_range} $PROTOCOL_PORT_PARAMS"
+      [ "$DIR" != "/opt/tmp" ] && script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME src_range=${src_range} $PROTOCOL_PORT_PARAMS dir=${DIR}"
       Manual_Method "$@"
     else
-      script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src_range=${src_range}"
-      [ "$DIR" != "/opt/tmp" ] && script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src_range=${src_range} dir=${DIR}"
+      script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src_range=${src_range} $PROTOCOL_PORT_PARAMS"
+      [ "$DIR" != "/opt/tmp" ] && script_entry="sh $SCR_DIR/x3mRouting.sh $SRC_IFACE $DST_IFACE $IPSET_NAME $X3M_METHOD src_range=${src_range} $PROTOCOL_PORT_PARAMS dir=${DIR}"
     fi
     IPT_DEL_ENTRY="iptables -t mangle -D PREROUTING -i br0 -m iprange --src-range $src_range -m set --match-set $IPSET_NAME dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK 2>/dev/null"
     IPT_ADD_ENTRY="iptables -t mangle -A PREROUTING -i br0 -m iprange --src-range $src_range -m set --match-set $IPSET_NAME dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK"
@@ -657,12 +614,12 @@ delete_Ipset_list() {
         printf '[1-2]: '
         read -r "CONFIRM_DEL"
         case "$CONFIRM_DEL" in
-        1)
-          rm "$DIR/$IPSET_NAME" && printf '\n%b%s%b%s\n' "$COLOR_GREEN" "$DIR/$IPSET_NAME" "$COLOR_WHITE" " file deleted."
-          echo
-          return
-          ;;
-        *) return ;;
+          1)
+            rm "$DIR/$IPSET_NAME" && printf '\n%b%s%b%s\n' "$COLOR_GREEN" "$DIR/$IPSET_NAME" "$COLOR_WHITE" " file deleted."
+            echo
+            return
+            ;;
+          *) return ;;
         esac
       done
     elif [ "$del_flag" = "FORCE" ]; then
@@ -717,15 +674,15 @@ AWS_Region_Param() {
   AWS_REGION=$(echo "$@" | sed -n "s/^.*aws_region=//p" | awk '{print $1}' | tr ',' ' ')
   for AWS_REGION in $AWS_REGION; do
     case "$AWS_REGION" in
-    AP) REGION="ap-east-1 ap-northeast-1 ap-northeast-2 ap-northeast-3 ap-south-1 ap-southeast-1 ap-southeast-2" ;;
-    CA) REGION="ca-central-1" ;;
-    CN) REGION="cn-north-1 cn-northwest-1" ;;
-    EU) REGION="eu-central-1 eu-north-1 eu-west-1 eu-west-2 eu-west-3" ;;
-    SA) REGION="sa-east-1" ;;
-    US) REGION="us-east-1 us-east-2 us-west-1 us-west-2" ;;
-    GV) REGION="us-gov-east-1 us-gov-west-1" ;;
-    GLOBAL) REGION="GLOBAL" ;;
-    *) error_exit "Invalid AMAZON region specified: $AWS_REGION. Valid values are: AP CA CN EU SA US GV GLOBAL" ;;
+      AP) REGION="ap-east-1 ap-northeast-1 ap-northeast-2 ap-northeast-3 ap-south-1 ap-southeast-1 ap-southeast-2" ;;
+      CA) REGION="ca-central-1" ;;
+      CN) REGION="cn-north-1 cn-northwest-1" ;;
+      EU) REGION="eu-central-1 eu-north-1 eu-west-1 eu-west-2 eu-west-3" ;;
+      SA) REGION="sa-east-1" ;;
+      US) REGION="us-east-1 us-east-2 us-west-1 us-west-2" ;;
+      GV) REGION="us-gov-east-1 us-gov-west-1" ;;
+      GLOBAL) REGION="GLOBAL" ;;
+      *) error_exit "Invalid AMAZON region specified: $AWS_REGION. Valid values are: AP CA CN EU SA US GV GLOBAL" ;;
     esac
     Create_Ipset_List "AWS"
     Load_AWS_Ipset_List "$REGION"
@@ -733,8 +690,7 @@ AWS_Region_Param() {
 }
 
 Manual_Method() {
-  Chk_Entware 60
-  if [ "$READY" -eq 1 ]; then error_exit "Entware not ready. Unable to access ipset save/restore location"; fi
+  if ! chk_entware 60; then error_exit "Entware not ready. Unable to access ipset save/restore location"; fi
   ############## Special Processing for 'ip=' parameter
   if [ "$(echo "$@" | grep -c 'ip=')" -gt 0 ]; then
     IP=$(echo "$@" | sed -n "s/^.*ip=//p" | awk '{print $1}')
@@ -779,12 +735,10 @@ Manual_Method() {
 VPN_Server_to_VPN_Client() { # Work only with OpenVPN
   vpn_server_instance=$1
   del_flag=$2
-  server="server=$vpn_server_instance"
-  CLIENT="client=$VPN_CLIENT_INSTANCE"
-  script_entry="sh $SCRIPT_DIR/x3mRouting.sh $server $CLIENT"
+  script_entry="sh $SCRIPT_DIR/x3mRouting.sh server=$vpn_server_instance client=$VPN_CLIENT_INSTANCE"
   vpn_server_subnet="$(nvram get vpn_server"${vpn_server_instance}"_sn)/24"
-  IPT_DEL_ENTRY="iptables -t nat -D POSTROUTING -s \"\$(nvram get vpn_server${vpn_server_instance}_sn)\"/24 -o $IFACE -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null"
-  IPT_ADD_ENTRY="iptables -t nat -A POSTROUTING -s \"\$(nvram get vpn_server${vpn_server_instance}_sn)\"/24 -o $IFACE -p tcp -m multiport --dports 80,443 -j MASQUERADE"
+  IPT_DEL_ENTRY="iptables -t nat -D POSTROUTING -s \"\$(nvram get vpn_server${vpn_server_instance}_sn)\"/24 -o $IFACE $PROTOCOL_PORT_PARAMS -j MASQUERADE 2>/dev/null"
+  IPT_ADD_ENTRY="iptables -t nat -A POSTROUTING -s \"\$(nvram get vpn_server${vpn_server_instance}_sn)\"/24 -o $IFACE $PROTOCOL_PORT_PARAMS -j MASQUERADE"
   vpnc_up_file="$SCRIPT_DIR/vpnclient${VPN_CLIENT_INSTANCE}-route-up"
   vpnc_down_file="$SCRIPT_DIR/vpnclient${VPN_CLIENT_INSTANCE}-route-pre-down"
   POLICY_RULE_WITHOUT_NAME="${vpn_server_subnet}>>VPN"
@@ -798,53 +752,14 @@ VPN_Server_to_VPN_Client() { # Work only with OpenVPN
   if [ -z "$del_flag" ]; then # add ipt_entry if del_flag is null
     eval "$IPT_DEL_ENTRY"
     eval "$IPT_ADD_ENTRY"
-    # vpnclientX-route-up File
-    if [ -s "$vpnc_up_file" ]; then
-      # Check if an existing ipt_entry exists
-      for ipt_entry in "$IPT_DEL_ENTRY" "$IPT_ADD_ENTRY"; do
-        if [ "$(grep -cw "$ipt_entry" "$vpnc_up_file")" -eq 0 ]; then # if true, add ipt_entry
-          echo "$ipt_entry" >>"$vpnc_up_file"
-          # Implement routing rules
-          iptables -t nat -D POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
-          iptables -t nat -A POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE
-        fi
-      done
-    else # vpnclientX-route-up file does not exist
-      true >"$vpnc_up_file"
-      {
-        echo "#!/bin/sh"
-        echo "$IPT_DEL_ENTRY"
-        echo "$IPT_ADD_ENTRY"
-      } >>"$vpnc_up_file"
-      # Implement routing rules
-      iptables -t nat -D POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
-      iptables -t nat -A POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE
-    fi
-    # vpnclientX-route-pre-down File
-    if [ -s "$vpnc_down_file" ]; then
-      #Check if an existing ipt_entry exists
-      if [ "$(grep -cw "$IPT_DEL_ENTRY" "$vpnc_down_file")" -eq 0 ]; then # ipt_entry does not exist, add ipt_entry
-        echo "$IPT_DEL_ENTRY" >>"$vpnc_down_file"
-      fi
-    else # # vpnclientX-route-pre-down file does not exist, add ipt_entry
-      echo "#!/bin/sh" >"$vpnc_down_file"
-      echo "$IPT_DEL_ENTRY" >>"$vpnc_down_file"
-    fi
 
-    # nat-start File
-    if [ -s "$NAT_START" ]; then
-      if [ "$(grep -cw "$script_entry" "$NAT_START")" -eq 0 ]; then # if true, then no lines exist, add ipt_entry
-        echo "$script_entry # x3mRouting" >>"$NAT_START"
-        logger -st "($(basename "$0"))" $$ "$script_entry added to $NAT_START"
-      fi
-    else # nat-start file does not exist,create it
-      true >"$NAT_START"
-      {
-        printf '%s\n' "#!/bin/sh"
-        printf '%s\n' "$script_entry # x3mRouting" # file does not exist, create vpnc_up_file
-      } >"$NAT_START"
-      logger -st "($(basename "$0"))" $$ "$script_entry added to $NAT_START"
-    fi
+    iptables -t nat -D POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" $PROTOCOL_PORT_PARAMS -j MASQUERADE 2>/dev/null
+    iptables -t nat -A POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" $PROTOCOL_PORT_PARAMS -j MASQUERADE
+
+    add_entry_to_file "$vpnc_up_file" "$IPT_DEL_ENTRY"
+    add_entry_to_file "$vpnc_up_file" "$IPT_ADD_ENTRY"
+    add_entry_to_file "$vpnc_down_file" "$IPT_DEL_ENTRY"
+    add_entry_to_file "$NAT_START" "$script_entry"
 
     # Add nvram ipt_entry to vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist
     if [ "$(echo "$VPN_IP_LIST" | grep -c "$POLICY_RULE_WITHOUT_NAME")" -eq 0 ]; then
@@ -905,7 +820,7 @@ VPN_Server_to_VPN_Client() { # Work only with OpenVPN
 
     # nat-start File
     if [ -s "$NAT_START" ]; then
-      sed "/$server $CLIENT/d" "$NAT_START" >"$NAT_START.tmp" && mv "$NAT_START.tmp" "$NAT_START"
+      sed "/server=$vpn_server_instance client=$VPN_CLIENT_INSTANCE/d" "$NAT_START" >"$NAT_START.tmp" && mv "$NAT_START.tmp" "$NAT_START"
       logger -t "($(basename "$0"))" $$ "$script_entry ipt_entry deleted from $NAT_START"
       Check_For_Shebang "$NAT_START"
     fi
@@ -942,19 +857,19 @@ vpn_server_to_ipset() {
   del_flag=$2
 
   case "$vpn_server_instance" in
-  1)
-    vpn_server_tun="tun21"
-    vpn_server_subnet="$(nvram get vpn_server1_sn)/24" # Get VPN Server IP
-    ;;
-  2)
-    vpn_server_tun="tun22"
-    vpn_server_subnet="$(nvram get vpn_server2_sn)/24"
-    ;;
-  3)
-    vpn_server_tun="wgs1"
-    vpn_server_subnet="$(nvram get wgs_addr)" # Already includes the subnet mask
-    ;;
-  *) error_exit "VPN Server instance $vpn_server_instance should be a 1, 2 for OpenVPN or 3 for WireGuard" ;;
+    1)
+      vpn_server_tun="tun21"
+      vpn_server_subnet="$(nvram get vpn_server1_sn)/24" # Get VPN Server IP
+      ;;
+    2)
+      vpn_server_tun="tun22"
+      vpn_server_subnet="$(nvram get vpn_server2_sn)/24"
+      ;;
+    3)
+      vpn_server_tun="wgs1"
+      vpn_server_subnet="$(nvram get wgs_addr)" # Already includes the subnet mask
+      ;;
+    *) error_exit "VPN Server instance $vpn_server_instance should be a 1, 2 for OpenVPN or 3 for WireGuard" ;;
   esac
 
   # POSTROUTING CHAIN
@@ -1039,7 +954,7 @@ Dnsmasq_Log_File() {
   fi
 }
 
-Check_Second_Param() {
+check_second_param() {
   if [ "$(echo "$2" | grep -c 'client=')" -eq 0 ] || [ "$(echo "$2" | grep -c 'ipset_name=')" -eq 0 ]; then
     error_exit "Expecting first parameter to be 'server=' or 'ipset_name='"
   fi
@@ -1052,23 +967,26 @@ define_iface() {
   fwmark_substr=$(echo "$TAG_MARK" | cut -c 3-6)
 
   case "$fwmark_substr" in
-  8000) IFACE="br0" ;;
-  1000) IFACE="tun11" ;;
-  2000) IFACE="tun12" ;;
-  4000) IFACE="tun13" ;;
-  7000) IFACE="tun14" ;;
-  3000) IFACE="tun15" ;;
-  a000) IFACE="wgc1" ;;
-  b000) IFACE="wgc2" ;;
-  c000) IFACE="wgc3" ;;
-  d000) IFACE="wgc4" ;;
-  e000) IFACE="wgc5" ;;
-  *) error_exit "$1 should be 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client" ;;
+    8000) IFACE="br0" ;;
+    1000) IFACE="tun11" ;;
+    2000) IFACE="tun12" ;;
+    4000) IFACE="tun13" ;;
+    7000) IFACE="tun14" ;;
+    3000) IFACE="tun15" ;;
+    a000) IFACE="wgc1" ;;
+    b000) IFACE="wgc2" ;;
+    c000) IFACE="wgc3" ;;
+    d000) IFACE="wgc4" ;;
+    e000) IFACE="wgc5" ;;
+    *) error_exit "$1 should be 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client" ;;
   esac
 }
 
 parse_protocol_and_ports() {
   args="$*"
+
+  PROTOCOL_PORT_RULE=""
+  PROTOCOL_PORT_PARAMS=""
 
   if echo "$args" | grep -Fq "protocol="; then
     protocols=$(awk '{print tolower($1)}' /etc/protocols | grep -v '^#' | tr '\n' ' ')
@@ -1078,9 +996,9 @@ parse_protocol_and_ports() {
     fi
 
     if echo "$args" | grep -Fq "port="; then
-      PORT=$(echo "$args" | sed -n 's/.*port=\([^ ]*\).*/\1/p')
-      if echo "$PORT" | grep -Eq '^[0-9]+$'; then
-        if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+      port=$(echo "$args" | sed -n 's/.*port=\([^ ]*\).*/\1/p')
+      if echo "$port" | grep -Eq '^[0-9]+$'; then
+        if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
           error_exit "Port number in 'port=' must be between 1 and 65535."
         fi
       else
@@ -1089,9 +1007,9 @@ parse_protocol_and_ports() {
     fi
 
     if echo "$args" | grep -Fq "ports="; then
-      PORTS=$(echo "$args" | sed -n 's/.*ports=\([^ ]*\).*/\1/p')
-      if echo "$PORTS" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
-        port_list=$(echo "$PORTS" | tr ',' ' ')
+      ports=$(echo "$args" | sed -n 's/.*ports=\([^ ]*\).*/\1/p')
+      if echo "$ports" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
+        port_list=$(echo "$ports" | tr ',' ' ')
         for port in $port_list; do
           if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
             error_exit "Port numbers in 'ports=' must be between 1 and 65535."
@@ -1102,14 +1020,17 @@ parse_protocol_and_ports() {
       fi
     fi
 
-    if { [ -n "$PORT" ] || [ -n "$PORTS" ]; } && ! echo "tcp udp udplite sctp dccp" | grep -qw "$protocol"; then
+    if { [ -n "$port" ] || [ -n "$ports" ]; } && ! echo "tcp udp udplite sctp dccp" | grep -qw "$protocol"; then
       error_exit "Unsupported protocol '$protocol' for port parameter. Accept only TCP, UDP, UDPLITE, SCTP, DCCP."
-    elif [ -n "$PORTS" ]; then
-      PROTOCOL_PORT_RULE="-p $protocol -m multiport --dports $PORTS"
-    elif [ -n "$PORT" ]; then
-      PROTOCOL_PORT_RULE="-p $protocol --dport $PORT"
+    elif [ -n "$ports" ]; then
+      PROTOCOL_PORT_RULE="-p $protocol -m multiport --dports $ports"
+      PROTOCOL_PORT_PARAMS="protocol=$protocol ports=$ports"
+    elif [ -n "$port" ]; then
+      PROTOCOL_PORT_RULE="-p $protocol --dport $port"
+      PROTOCOL_PORT_PARAMS="protocol=$protocol port=$port"
     else
       PROTOCOL_PORT_RULE="-p $protocol"
+      PROTOCOL_PORT_PARAMS="protocol=$protocol"
     fi
   fi
 }
@@ -1117,7 +1038,7 @@ parse_protocol_and_ports() {
 #==================== End of Functions  =====================================
 ## Begin ##
 log_info "Starting Script Execution" "$@"
-Check_Lock "$@"
+check_lock "$@"
 
 # Set del_flag if user specified 'del=force' parameter
 if [ "$(echo "$@" | grep -cw 'del=force')" -ge 1 ]; then
@@ -1148,8 +1069,8 @@ fi
 if [ "$(echo "$@" | grep -c 'server=')" -gt 0 ]; then
   server=$(echo "$@" | sed -n "s/^.*server=//p" | awk '{print $1}')
   case "$server" in
-  1 | 2 | 3 | all) ;;
-  *) error_exit "Invalid Server '$server' specified." ;;
+    1 | 2 | 3 | all) ;;
+    *) error_exit "Invalid Server '$server' specified." ;;
   esac
 
   if [ "$(echo "$@" | grep -c 'client=')" -eq 0 ] && [ "$(echo "$@" | grep -c 'ipset_name=')" -eq 0 ]; then
@@ -1160,18 +1081,20 @@ if [ "$(echo "$@" | grep -c 'server=')" -gt 0 ]; then
   if [ "$(echo "$@" | grep -c 'client=')" -gt 0 ]; then
     VPN_CLIENT_INSTANCE=$(echo "$@" | sed -n "s/^.*client=//p" | awk '{print $1}')
     case "$VPN_CLIENT_INSTANCE" in
-    1) IFACE="tun11" ;;
-    2) IFACE="tun12" ;;
-    3) IFACE="tun13" ;;
-    4) IFACE="tun14" ;;
-    5) IFACE="tun15" ;;
-    11) IFACE="wgc1" ;;
-    12) IFACE="wgc2" ;;
-    13) IFACE="wgc3" ;;
-    14) IFACE="wgc4" ;;
-    15) IFACE="wgc5" ;;
-    *) error_exit "ERROR 'client=$VPN_CLIENT_INSTANCE' reference should be 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client" ;;
+      1) IFACE="tun11" ;;
+      2) IFACE="tun12" ;;
+      3) IFACE="tun13" ;;
+      4) IFACE="tun14" ;;
+      5) IFACE="tun15" ;;
+      11) IFACE="wgc1" ;;
+      12) IFACE="wgc2" ;;
+      13) IFACE="wgc3" ;;
+      14) IFACE="wgc4" ;;
+      15) IFACE="wgc5" ;;
+      *) error_exit "ERROR 'client=$VPN_CLIENT_INSTANCE' reference should be 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client" ;;
     esac
+
+    parse_protocol_and_ports "$@"
 
     # Delete VPN Server to VPN Client rules?
     if [ "$(echo "$@" | grep -cw 'del')" -ge 1 ] || [ "$(echo "$@" | grep -cw 'del=force')" -ge 1 ]; then
@@ -1206,23 +1129,21 @@ if [ "$(echo "$@" | grep -c 'server=')" -gt 0 ]; then
       fi
     done
 
-    parse_protocol_and_ports "$@"
-
     IPSET_NAME=$(echo "$@" | sed -n "s/^.*ipset_name=//p" | awk '{print $1}' | tr ',' ' ')
     for IPSET_NAME in $IPSET_NAME; do
       define_iface "$IPSET_NAME"
 
       case "$IFACE" in
-      tun11) VPN_CLIENT_INSTANCE=1 ;;
-      tun12) VPN_CLIENT_INSTANCE=2 ;;
-      tun13) VPN_CLIENT_INSTANCE=3 ;;
-      tun14) VPN_CLIENT_INSTANCE=4 ;;
-      tun15) VPN_CLIENT_INSTANCE=5 ;;
-      wgc1) VPN_CLIENT_INSTANCE=11 ;;
-      wgc2) VPN_CLIENT_INSTANCE=12 ;;
-      wgc3) VPN_CLIENT_INSTANCE=13 ;;
-      wgc4) VPN_CLIENT_INSTANCE=14 ;;
-      wgc5) VPN_CLIENT_INSTANCE=15 ;;
+        tun11) VPN_CLIENT_INSTANCE=1 ;;
+        tun12) VPN_CLIENT_INSTANCE=2 ;;
+        tun13) VPN_CLIENT_INSTANCE=3 ;;
+        tun14) VPN_CLIENT_INSTANCE=4 ;;
+        tun15) VPN_CLIENT_INSTANCE=5 ;;
+        wgc1) VPN_CLIENT_INSTANCE=11 ;;
+        wgc2) VPN_CLIENT_INSTANCE=12 ;;
+        wgc3) VPN_CLIENT_INSTANCE=13 ;;
+        wgc4) VPN_CLIENT_INSTANCE=14 ;;
+        wgc5) VPN_CLIENT_INSTANCE=15 ;;
       esac
 
       if [ "$(echo "$@" | grep -cw 'del')" -ge 1 ] || [ "$(echo "$@" | grep -cw 'del=force')" -ge 1 ]; then
@@ -1244,7 +1165,7 @@ if [ "$(echo "$@" | grep -c 'server=')" -gt 0 ]; then
       fi
     done
     # nat-start File
-    script_entry="sh $SCR_DIR/x3mRouting.sh $1 $2"
+    script_entry="sh $SCR_DIR/x3mRouting.sh $1 $2 $PROTOCOL_PORT_PARAMS"
     if [ "$(echo "$@" | grep -cw 'del')" -eq 0 ] || [ "$(echo "$@" | grep -cw 'del=force')" -eq 0 ]; then
       add_entry_to_file "$NAT_START" "$script_entry"
     else
@@ -1344,93 +1265,108 @@ fi
 # Validate SRC_IFACE
 SRC_IFACE="$1"
 case "$SRC_IFACE" in
-ALL | [1-5] | 1[1-5]) ;;
-*) Check_Second_Param "$@" ;;
+  ALL | [1-5] | 1[1-5]) ;;
+  *) check_second_param "$@" ;;
 esac
 
 # Check for DST_IFACE
 if [ -n "$2" ]; then
   DST_IFACE=$2
+
   if [ "$SRC_IFACE" = "ALL" ]; then
     case "$DST_IFACE" in
-    [1-5] | 1[1-5]) ;;
-    *) error_exit "Invalid Source '$SRC_IFACE' and Destination ($DST_IFACE) combination." ;;
+      [1-5] | 1[1-5]) ;;
+      *) error_exit "Invalid source '$SRC_IFACE' and destination ($DST_IFACE) combination." ;;
     esac
   fi
+
   if echo "$VPN_IDS" | grep -qw "$SRC_IFACE"; then
     case "$DST_IFACE" in
-    0) ;;
-    *) error_exit "Invalid Source '$SRC_IFACE' and Destination ($DST_IFACE) combination." ;;
+      0) ;;
+      *) error_exit "Invalid source '$SRC_IFACE' and destination ($DST_IFACE) combination." ;;
     esac
   fi
-  Set_Fwmark_Params
+
+  # Define fwmark/bitmask to route traffic through the interfaces
+  FWMARK_WAN="0x8000/0xf000"    # Main WAN connection
+  FWMARK_OVPNC1="0x1000/0xf000" # OpenVPN connection 1
+  FWMARK_OVPNC2="0x2000/0xf000" # OpenVPN connection 2
+  FWMARK_OVPNC3="0x4000/0xf000" # OpenVPN connection 3
+  FWMARK_OVPNC4="0x7000/0xf000" # OpenVPN connection 4
+  FWMARK_OVPNC5="0x3000/0xf000" # OpenVPN connection 5
+  FWMARK_WGC1="0xa000/0xf000"   # WireGuard connection 1
+  FWMARK_WGC2="0xb000/0xf000"   # WireGuard connection 2
+  FWMARK_WGC3="0xc000/0xf000"   # WireGuard connection 3
+  FWMARK_WGC4="0xd000/0xf000"   # WireGuard connection 4
+  FWMARK_WGC5="0xe000/0xf000"   # WireGuard connection 5
+
 else
-  error_exit "missing arg2 'dst_iface'"
+  error_exit "Missing arg2 'dst iface'"
 fi
 
 # Validate and set IPSET_NAME
-IPSET_NAME=${3:?"$(error_exit 'missing arg3 IPSET_NAME')"}
+IPSET_NAME=${3:?"$(error_exit 'Missing arg3 IPSET_NAME')"}
 
 # Validate DST_IFACE and set destination TAG_MARK
 case "$DST_IFACE" in
-0)
-  TAG_MARK="$FWMARK_WAN"
-  TARGET_DESC="WAN"
-  ROUTE_TABLE=254
-  ;;
-1)
-  TAG_MARK="$FWMARK_OVPNC1"
-  TARGET_DESC="OVPN Client 1"
-  ROUTE_TABLE=ovpnc1
-  ;;
-2)
-  TAG_MARK="$FWMARK_OVPNC2"
-  TARGET_DESC="OVPN Client 2"
-  ROUTE_TABLE=ovpnc2
-  ;;
-3)
-  TAG_MARK="$FWMARK_OVPNC3"
-  TARGET_DESC="OVPN Client 3"
-  ROUTE_TABLE=ovpnc3
-  ;;
-4)
-  TAG_MARK="$FWMARK_OVPNC4"
-  TARGET_DESC="OVPN Client 4"
-  ROUTE_TABLE=ovpnc4
-  ;;
-5)
-  TAG_MARK="$FWMARK_OVPNC5"
-  TARGET_DESC="OVPN Client 5"
-  ROUTE_TABLE=ovpnc5
-  ;;
-11)
-  TAG_MARK="$FWMARK_WGC1"
-  TARGET_DESC="WG Client 1"
-  ROUTE_TABLE=wgc1
-  ;;
-12)
-  TAG_MARK="$FWMARK_WGC2"
-  TARGET_DESC="WG Client 2"
-  ROUTE_TABLE=wgc2
-  ;;
-13)
-  TAG_MARK="$FWMARK_WGC3"
-  TARGET_DESC="WG Client 3"
-  ROUTE_TABLE=wgc3
-  ;;
-14)
-  TAG_MARK="$FWMARK_WGC4"
-  TARGET_DESC="WG Client 4"
-  ROUTE_TABLE=wgc4
-  ;;
-15)
-  TAG_MARK="$FWMARK_WGC5"
-  TARGET_DESC="WG Client 5"
-  ROUTE_TABLE=wgc5
-  ;;
-*)
-  error_exit "$DST_IFACE should be 0-WAN or 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client"
-  ;;
+  0)
+    TAG_MARK="$FWMARK_WAN"
+    TARGET_DESC="WAN"
+    ROUTE_TABLE=254
+    ;;
+  1)
+    TAG_MARK="$FWMARK_OVPNC1"
+    TARGET_DESC="OVPN Client 1"
+    ROUTE_TABLE=ovpnc1
+    ;;
+  2)
+    TAG_MARK="$FWMARK_OVPNC2"
+    TARGET_DESC="OVPN Client 2"
+    ROUTE_TABLE=ovpnc2
+    ;;
+  3)
+    TAG_MARK="$FWMARK_OVPNC3"
+    TARGET_DESC="OVPN Client 3"
+    ROUTE_TABLE=ovpnc3
+    ;;
+  4)
+    TAG_MARK="$FWMARK_OVPNC4"
+    TARGET_DESC="OVPN Client 4"
+    ROUTE_TABLE=ovpnc4
+    ;;
+  5)
+    TAG_MARK="$FWMARK_OVPNC5"
+    TARGET_DESC="OVPN Client 5"
+    ROUTE_TABLE=ovpnc5
+    ;;
+  11)
+    TAG_MARK="$FWMARK_WGC1"
+    TARGET_DESC="WG Client 1"
+    ROUTE_TABLE=wgc1
+    ;;
+  12)
+    TAG_MARK="$FWMARK_WGC2"
+    TARGET_DESC="WG Client 2"
+    ROUTE_TABLE=wgc2
+    ;;
+  13)
+    TAG_MARK="$FWMARK_WGC3"
+    TARGET_DESC="WG Client 3"
+    ROUTE_TABLE=wgc3
+    ;;
+  14)
+    TAG_MARK="$FWMARK_WGC4"
+    TARGET_DESC="WG Client 4"
+    ROUTE_TABLE=wgc4
+    ;;
+  15)
+    TAG_MARK="$FWMARK_WGC5"
+    TARGET_DESC="WG Client 5"
+    ROUTE_TABLE=wgc5
+    ;;
+  *)
+    error_exit "$DST_IFACE should be 0-WAN or 1/2/3/4/5 for OPENVPN Client or 11/12/13/14/15 for WireGuard Client"
+    ;;
 esac
 
 set_ip_rule "$DST_IFACE"
