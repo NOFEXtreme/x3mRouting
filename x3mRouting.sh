@@ -757,7 +757,7 @@ process_src_option() {
     fi
     # check if 'asnum=' parm
     if [ "$(echo "$@" | grep -c 'asnum=')" -gt 0 ]; then
-      ASNUM_Param "$@"
+      asnum_param "$@"
       break
     fi
     # check if 'aws_region=' parm
@@ -831,7 +831,7 @@ process_dnsmasq() {
   fi
   service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
 
-  Create_Ipset_List "DNSMASQ"
+  create_ipset_list "DNSMASQ"
 
   if [ -d "$DIR" ]; then
     if [ "$(find "$DIR" -name "$IPSET_NAME" -mtime +1 -print 2>/dev/null)" = "$DIR/$IPSET_NAME" ]; then
@@ -842,9 +842,17 @@ process_dnsmasq() {
   cru l | grep "$IPSET_NAME" || cru a "$IPSET_NAME" "0 2 * * * ipset save $IPSET_NAME > $DIR/$IPSET_NAME" >/dev/null 2>&1 && log_info "CRON schedule created: #$IPSET_NAME# '0 2 * * * ipset save $IPSET_NAME'"
 }
 
-Download_ASN_Ipset_List() {
-  ASN=$1
-  curl -fsL --retry 3 --connect-timeout 3 "https://api.bgpview.io/asn/$ASN/prefixes" | grep -oE '.{20}([0-9]{1,3}\.){3}[0-9]{1,3}\\/[0-9]{1,2}' | grep -vF "parent" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}\\/[0-9]{1,2}' | tr -d "\\" | awk '{printf "add '"$IPSET_NAME"' %s\n", $1 }' | awk '!x[$0]++' | ipset restore -!
+fetching_asn_to_ipset() {
+  url="https://stat.ripe.net/data/as-routing-consistency/data.json?resource=$1"
+
+  log_info "Fetching data from: $url"
+  curl -fsL --retry 3 --connect-timeout 30 $url |
+    grep -o '"prefix": *"[^"]*' |
+    sed 's/"prefix": "//' |
+    grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' |
+    awk '!x[$0]++' |
+    awk '{printf "add '"$IPSET_NAME"' %s\n", $1 }' |
+    ipset restore -!
 }
 
 load_manual_ipset_list() {
@@ -948,23 +956,23 @@ Harvest_Domains() {
   fi
 }
 
-ASNUM_Param() {
-  ASN=$(echo "$@" | sed -n "s/^.*asnum=//p" | awk '{print $1}' | tr ',' ' ')
+asnum_param() {
+  asn=$(get_param "asnum" "$@")
 
-  for ASN in $ASN; do
-    PREFIX=$(printf '%-.2s' "$ASN")
-    NUMBER="$(echo "$ASN" | sed 's/^AS//')"
-    if [ "$PREFIX" = "AS" ]; then
+  for asn in $asn; do
+    prefix=$(printf '%-.2s' "$asn")
+    number="$(echo "$asn" | sed 's/^AS//')"
+    if [ "$prefix" = "AS" ]; then
       # Check for valid Number and skip if bad
-      A=$(echo "$NUMBER" | grep -oE '^\-?[0-9]+$')
+      A=$(echo "$number" | grep -Eo '^[0-9]+$')
       if [ -z "$A" ]; then
-        echo "Skipping invalid ASN: $NUMBER"
+        echo "Skipping invalid ASN: $number"
       else
-        Create_Ipset_List "ASN"
-        Download_ASN_Ipset_List "$ASN"
+        create_ipset_list "ASN"
+        fetching_asn_to_ipset "$asn"
       fi
     else
-      error_exit "Invalid Prefix specified: $PREFIX. Valid value is 'AS'"
+      error_exit "Invalid Prefix specified: $prefix. Valid value is 'AS'"
     fi
   done
 }
@@ -983,7 +991,7 @@ AWS_Region_Param() {
       GLOBAL) REGION="GLOBAL" ;;
       *) error_exit "Invalid AMAZON region specified: $AWS_REGION. Valid values are: AP CA CN EU SA US GV GLOBAL" ;;
     esac
-    Create_Ipset_List "AWS"
+    create_ipset_list "AWS"
     Load_AWS_Ipset_List "$REGION"
   done
 }
@@ -1024,20 +1032,20 @@ Manual_Method() {
     if grep -q "create" "$DIR/$IPSET_NAME"; then
       error_exit "$DIR/$IPSET_NAME save/restore file is in dnsmasq format. The Manual Method requires IPv4 format."
     fi
-    Create_Ipset_List "MANUAL"
+    create_ipset_list "MANUAL"
     load_manual_ipset_list
   else
     error_exit "The save/restore file $DIR/$IPSET_NAME does not exist."
   fi
 }
 
-Create_Ipset_List() {
-  METHOD=$1
+create_ipset_list() {
+  method=$1
 
   if ! chk_entware 120; then error_exit "Entware not ready. Unable to access ipset save/restore location"; fi
   if [ "$(ipset list -n "$IPSET_NAME" 2>/dev/null)" != "$IPSET_NAME" ]; then # does ipset list exist?
     if [ -s "$DIR/$IPSET_NAME" ]; then                                       # does ipset restore file exist?
-      if [ "$METHOD" = "DNSMASQ" ]; then
+      if [ "$method" = "DNSMASQ" ]; then
         ipset restore -! <"$DIR/$IPSET_NAME"
         log_info "IPSET restored: $IPSET_NAME from $DIR/$IPSET_NAME"
       else
@@ -1234,7 +1242,7 @@ case "$*" in
     check_files_for_entries "dnsmasq=$NAT_ENTRY"
     ;;
   *asnum=*) # ASN Method
-    ASNUM_Param "$@"
+    asnum_param "$@"
     check_files_for_entries "asnum=$(get_param "asnum" "$@")"
     ;;
   *aws_region=*) # Amazon Method
