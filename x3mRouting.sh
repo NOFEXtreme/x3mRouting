@@ -762,7 +762,7 @@ process_src_option() {
     fi
     # check if 'aws_region=' parm
     if [ "$(echo "$@" | grep -c 'aws_region=')" -gt 0 ]; then
-      AWS_Region_Param "$@"
+      aws_region_param "$@"
       break
     fi
     # Manual Method
@@ -842,62 +842,10 @@ process_dnsmasq() {
   cru l | grep "$IPSET_NAME" || cru a "$IPSET_NAME" "0 2 * * * ipset save $IPSET_NAME > $DIR/$IPSET_NAME" >/dev/null 2>&1 && log_info "CRON schedule created: #$IPSET_NAME# '0 2 * * * ipset save $IPSET_NAME'"
 }
 
-fetching_asn_to_ipset() {
-  url="https://stat.ripe.net/data/as-routing-consistency/data.json?resource=$1"
-
-  log_info "Fetching data from: $url"
-  curl -fsL --retry 3 --connect-timeout 30 $url |
-    grep -o '"prefix": *"[^"]*' |
-    sed 's/"prefix": "//' |
-    grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' |
-    awk '!x[$0]++' |
-    awk '{printf "add '"$IPSET_NAME"' %s\n", $1 }' |
-    ipset restore -!
-}
-
 load_manual_ipset_list() {
   if [ "$(ipset list -n "$IPSET_NAME" 2>/dev/null)" = "$IPSET_NAME" ]; then #does ipset list exist?
     [ -s "$DIR/$IPSET_NAME" ] && awk '{print "add '"$IPSET_NAME"' " $1}' "$DIR/$IPSET_NAME" | ipset restore -!
   fi
-}
-
-# Download Amazon AWS json file
-Download_AMAZON() {
-  if [ -s "$DIR/ip-ranges.json" ]; then
-    if [ "$(find "$DIR" -name "ip-ranges.json" -mtime +7 -print)" = "$DIR/ip-ranges.json" ]; then
-      STATUS=$(curl --retry 3 -sL -o "$DIR/ip-ranges.json" -w '%{http_code}' "https://ip-ranges.amazonaws.com/ip-ranges.json")
-      if [ "$STATUS" -eq 200 ]; then
-        log_info "Download of https://ip-ranges.amazonaws.com/ip-ranges.json successful."
-      else
-        log_info "Download of https://ip-ranges.amazonaws.com/ip-ranges.json failed. Using existing file."
-      fi
-    fi
-  else
-    STATUS=$(curl --retry 3 -sL -o "$DIR/ip-ranges.json" -w '%{http_code}' "https://ip-ranges.amazonaws.com/ip-ranges.json")
-    if [ "$STATUS" -eq 200 ]; then
-      log_info "Download of https://ip-ranges.amazonaws.com/ip-ranges.json successful."
-    else
-      error_exit "Download of https://ip-ranges.amazonaws.com/ip-ranges.json failed."
-    fi
-  fi
-}
-
-Load_AWS_Ipset_List() {
-  REGION=$1
-
-  Download_AMAZON
-
-  if [ ! -s "$DIR/$IPSET_NAME" ]; then
-    true >"$DIR/$IPSET_NAME"
-  fi
-
-  # don't quote the parameter so it is treated like an array!
-  for REGION in $REGION; do
-    jq '.prefixes[] | select(.region=='\""$REGION"\"') | .ip_prefix' <"$DIR/ip-ranges.json" | sed 's/"//g' >>"$DIR/$IPSET_NAME"
-  done
-  sort -gt '/' -k 1 "$DIR/$IPSET_NAME" | sort -ut '.' -k 1,1n -k 2,2n -k 3,3n -k 4,4n >"$DIR/${IPSET_NAME}_tmp"
-  mv "$DIR/${IPSET_NAME}_tmp" "$DIR/$IPSET_NAME"
-  awk '{print "add '"$IPSET_NAME"' " $1}' "$DIR/$IPSET_NAME" | ipset restore -!
 }
 
 DNSMASQ_Param() {
@@ -957,7 +905,7 @@ Harvest_Domains() {
 }
 
 asnum_param() {
-  asn=$(get_param "asnum" "$@")
+  asn=$(get_param "asnum" "$@" | tr ',' ' ')
 
   for asn in $asn; do
     prefix=$(printf '%-.2s' "$asn")
@@ -969,7 +917,7 @@ asnum_param() {
         echo "Skipping invalid ASN: $number"
       else
         create_ipset_list "ASN"
-        fetching_asn_to_ipset "$asn"
+        fetch_asn_to_ipset "$asn"
       fi
     else
       error_exit "Invalid Prefix specified: $prefix. Valid value is 'AS'"
@@ -977,28 +925,66 @@ asnum_param() {
   done
 }
 
-AWS_Region_Param() {
-  AWS_REGION=$(echo "$@" | sed -n "s/^.*aws_region=//p" | awk '{print $1}' | tr ',' ' ')
-  for AWS_REGION in $AWS_REGION; do
-    case "$AWS_REGION" in
-      AP) REGION="ap-east-1 ap-northeast-1 ap-northeast-2 ap-northeast-3 ap-south-1 ap-southeast-1 ap-southeast-2" ;;
-      CA) REGION="ca-central-1" ;;
-      CN) REGION="cn-north-1 cn-northwest-1" ;;
-      EU) REGION="eu-central-1 eu-north-1 eu-west-1 eu-west-2 eu-west-3" ;;
-      SA) REGION="sa-east-1" ;;
-      US) REGION="us-east-1 us-east-2 us-west-1 us-west-2" ;;
-      GV) REGION="us-gov-east-1 us-gov-west-1" ;;
-      GLOBAL) REGION="GLOBAL" ;;
-      *) error_exit "Invalid AMAZON region specified: $AWS_REGION. Valid values are: AP CA CN EU SA US GV GLOBAL" ;;
+fetch_asn_to_ipset() {
+  asn="$1"
+  file="$DIR/$asn.json"
+  url="https://stat.ripe.net/data/as-routing-consistency/data.json?resource=$asn"
+
+  log_info "Fetching data from: $url"
+  curl --retry 3 --connect-timeout 30 -sfL -o "$file" "$url" || error_exit "Fetching failed."
+
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' "$file" |
+    sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME"
+  sed "s/^/add $IPSET_NAME /" "$DIR/$IPSET_NAME" | ipset restore -!
+}
+
+aws_region_param() {
+  aws_regions=$(get_param "aws_region" "$@" | tr ',' ' ' | awk '{print toupper($0)}')
+  for aws_region in $aws_regions; do
+    case "$aws_region" in
+      AP) regions="ap-east-1 ap-northeast-1 ap-northeast-2 ap-northeast-3 ap-south-1 ap-southeast-1 ap-southeast-2" ;;
+      CA) regions="ca-central-1" ;;
+      CN) regions="cn-north-1 cn-northwest-1" ;;
+      EU) regions="eu-central-1 eu-north-1 eu-west-1 eu-west-2 eu-west-3" ;;
+      SA) regions="sa-east-1" ;;
+      US) regions="us-east-1 us-east-2 us-west-1 us-west-2" ;;
+      GV) regions="us-gov-east-1 us-gov-west-1" ;;
+      GLOBAL) regions="GLOBAL" ;;
+      *) error_exit "Invalid AMAZON region specified: $aws_region. Valid values are: AP CA CN EU SA US GV GLOBAL" ;;
     esac
     create_ipset_list "AWS"
-    Load_AWS_Ipset_List "$REGION"
+    fetch_aws_to_ipset "$regions"
   done
 }
 
+fetch_aws_to_ipset() {
+  regions=$1
+  file="$DIR/aws-ip-ranges.json"
+  url="https://ip-ranges.amazonaws.com/ip-ranges.json"
+
+  if [ -z "$file" ] || [ -n "$(find "$file" -type f -mtime +7 -print)" ]; then
+    log_info "Fetching data from: $url"
+    if ! curl --retry 3 --connect-timeout 30 -sfL -o "$file" "$url"; then
+      if [ -s "$file" ]; then
+        log_info "Fetching failed. Using existing $file."
+      else
+        error_exit "Fetching failed and no existing $file."
+      fi
+    fi
+  fi
+
+  for region in $regions; do
+    grep -B 1 "\"region\": \"$region\"" "$file" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}'
+  done | sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME"
+
+  sed "s/^/add $IPSET_NAME /" "$DIR/$IPSET_NAME" | ipset restore -!
+}
+
 Manual_Method() {
-  if ! chk_entware 60; then error_exit "Entware not ready. Unable to access ipset save/restore location"; fi
-  ############## Special Processing for 'ip=' parameter
+  if ! chk_entware 60; then
+    error_exit "Entware not ready. Unable to access ipset save/restore location"
+  fi
+
   if [ "$(echo "$@" | grep -c 'ip=')" -gt 0 ]; then
     IP=$(echo "$@" | sed -n "s/^.*ip=//p" | awk '{print $1}')
     [ -s "$DIR/$IPSET_NAME" ] || true >"/opt/tmp/$IPSET_NAME"
@@ -1026,7 +1012,6 @@ Manual_Method() {
       mv "$DIR/${IPSET_NAME}_tmp" "$DIR/$IPSET_NAME"
     done
   fi
-  ############## End of Special Processing for 'ip=' parameter
 
   if [ -s "$DIR/$IPSET_NAME" ]; then
     if grep -q "create" "$DIR/$IPSET_NAME"; then
@@ -1177,7 +1162,9 @@ if echo "$1" | grep -q '^server='; then
     error_exit "Second parameter must be 'client=' or 'ipset_name='."
   fi
 elif echo "$1" | grep -Eq '^ipset_name='; then
-  if echo "$2" | grep -Eq '^(src=|src_range=)'; then
+  if [ -z "$2" ]; then
+    error_exit "Second parameter must be 'dnsmasq=', 'dnsmasq_file=', 'autoscan=', 'asnum=', 'aws_region=', 'ip=' or 'dir='."
+  elif echo "$2" | grep -Eq '^(src=|src_range=)'; then
     error_exit "'src=' or 'src_range=' cannot be used with 'ipset_name='."
   fi
 elif echo "$1" | grep -Eq '^[0-5]|1[1-5]$'; then
@@ -1236,7 +1223,7 @@ case "$*" in
     DNSMASQ_Param "$@"
     check_files_for_entries "dnsmasq_file=$DNSMASQ_FILE"
     ;;
-  *autoscan*) # autoscan method
+  *autoscan=*) # autoscan method
     Dnsmasq_Log_File
     Harvest_Domains "$@"
     check_files_for_entries "dnsmasq=$NAT_ENTRY"
@@ -1246,7 +1233,7 @@ case "$*" in
     check_files_for_entries "asnum=$(get_param "asnum" "$@")"
     ;;
   *aws_region=*) # Amazon Method
-    AWS_Region_Param "$@"
+    aws_region_param "$@"
     check_files_for_entries "aws_region=$(get_param "aws_region" "$@")"
     ;;
   *ip=* | *dir=*)
