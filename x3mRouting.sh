@@ -60,8 +60,7 @@
 #                          # a shebang exists. **Will not** prompt for permission before deleting a
 #                          # file if only a shebang exists.
 #            ['protocol=udp|tcp'] # Set protocol to 'udp', 'tcp' or other supported by the system
-#            ['port=port] # Set port destination
-#            ['ports=port[,port]...] # Set ports destination
+#            ['ports=80,443...'] # Set ports destination
 #
 #_____________________________________________________________________________________________________________
 #
@@ -94,7 +93,7 @@
 #
 # VPN Server to existing LAN routing rules for one or more IPSET lists
 #
-# x3mRouting {'server='1|2|3|all} {'ipset_name='IPSET[,IPSET]...} ['protocol=udp|tcp'] ['port=port] ['ports=port[,port]...] ['del'] ['del=force']
+# x3mRouting {'server='1|2|3|all} {'ipset_name='IPSET[,IPSET]...} ['protocol=udp|tcp'] ['ports=80,443...'] ['del'] ['del=force']
 #_____________________________________________________________________________________________________________
 
 # Print between line beginning with '#__' to first blank line inclusive (source: Martineau)
@@ -393,15 +392,19 @@ set_fwmark_ip_rule() {
 }
 
 set_wg_rp_filter() {
-  # Check if $ROUTE_TABLE starts with 'wgc'
-  if [ "${ROUTE_TABLE#wgc}" != "$ROUTE_TABLE" ]; then
+  if [ "${ROUTE_TABLE#wgc}" != "$ROUTE_TABLE" ]; then # Check if $ROUTE_TABLE starts with 'wgc'
     # Here we set the reverse path filtering mode for the interface 'wgc*'.
     # This setting is only necessary for WireGuard. OpenVPN on Asuswrt-Merlin defaults to '0'.
     # 0 - Disables reverse path filtering, accepting all packets without verifying the source route.
     # 1 - Enables strict mode, accepting packets only if the route to the source IP matches the incoming interface.
     # 2 - Enables loose mode, allowing packets to be accepted on any interface as long as a route to the source IP exists.
     rp_filter="echo 2 >/proc/sys/net/ipv4/conf/$ROUTE_TABLE/rp_filter"
-    eval "$rp_filter"
+
+    if [ -f "/proc/sys/net/ipv4/conf/$ROUTE_TABLE/rp_filter" ]; then
+      eval "$rp_filter"
+    else
+      log_info "rp_filter file not found for $ROUTE_TABLE, VPN server likely disabled."
+    fi
 
     # Ensure 'rp_filter' is applied persistently across reboots.
     for file in "$NAT_START" "$WG_START" "$WAN_EVENT"; do
@@ -423,17 +426,6 @@ parse_protocol_and_ports() {
       exit_error "Unsupported protocol: '$protocol'."
     fi
 
-    if echo "$args" | grep -Fq "port="; then
-      port=$(get_param "port" "$args")
-      if echo "$port" | grep -Eq '^[0-9]+$'; then
-        if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-          exit_error "Port number in 'port=' must be between 1 and 65535."
-        fi
-      else
-        exit_error "The 'port=' parameter should contain only digits."
-      fi
-    fi
-
     if echo "$args" | grep -Fq "ports="; then
       ports=$(get_param "ports" "$args")
       if echo "$ports" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
@@ -448,14 +440,11 @@ parse_protocol_and_ports() {
       fi
     fi
 
-    if { [ -n "$port" ] || [ -n "$ports" ]; } && ! echo "tcp udp udplite sctp dccp" | grep -qw "$protocol"; then
+    if [ -n "$ports" ] && ! echo "tcp udp udplite sctp dccp" | grep -qw "$protocol"; then
       exit_error "Unsupported protocol '$protocol' for port parameter. Accept only TCP, UDP, UDPLITE, SCTP, DCCP."
     elif [ -n "$ports" ]; then
       PROTOCOL_PORT_RULE="-p $protocol -m multiport --dports $ports"
       PROTOCOL_PORT_PARAMS="protocol=$protocol ports=$ports"
-    elif [ -n "$port" ]; then
-      PROTOCOL_PORT_RULE="-p $protocol --dport $port"
-      PROTOCOL_PORT_PARAMS="protocol=$protocol port=$port"
     else
       PROTOCOL_PORT_RULE="-p $protocol"
       PROTOCOL_PORT_PARAMS="protocol=$protocol"
@@ -988,7 +977,7 @@ manual_method() {
     echo "$ip" | grep -oE "$IP_RE(/$IP_RE_PREFIX)?" || log_warning "$ip is an invalid IP or CIDR. Skipping entry." >&2
   done | sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME"
 
-  if [ -s "$DIR/$IPSET_NAME" ]; then
+  if [ -f "$DIR/$IPSET_NAME" ]; then
     if grep -q "create" "$DIR/$IPSET_NAME"; then
       exit_error "$DIR/$IPSET_NAME save/restore file is in dnsmasq format. The Manual Method requires IPv4 format."
     fi
@@ -1138,6 +1127,8 @@ elif echo "$1" | grep -Eq '^ipset_name='; then
   elif echo "$2" | grep -Eq '^(src=|src_range=)'; then
     exit_error "'src=' or 'src_range=' cannot be used with 'ipset_name='."
   fi
+elif [ -z "$4" ]; then
+  exit_error "Fourth parameter is empty."
 elif echo "$1" | grep -Eq '^[0-5]|1[1-5]$'; then
   SRC_IFACE=$1
   if [ -n "$2" ]; then
@@ -1163,10 +1154,8 @@ IPSET_NAME=$(get_param "ipset_name" "$@")
 if [ -z "$IPSET_NAME" ]; then
   if [ -n "$3" ]; then
     IPSET_NAME=$3
-    if [ "${#IPSET_NAME}" -gt 31 ]; then
-      exit_error "$IPSET_NAME is longer than 31 characters"
-    elif echo "$IPSET_NAME" | grep -Eq '[^A-Za-z0-9_]'; then
-      exit_error "$IPSET_NAME contains invalid characters, only A-Z, a-z, 0-9 and _ allowed"
+    if ! echo "$IPSET_NAME" | grep -Eq '^[a-zA-Z0-9_-]{1,31}$'; then
+      exit_error "$IPSET_NAME is invalid: use only A-Z, a-z, 0-9, _ or -, max 31 symbols."
     fi
   else
     exit_error "Missing arg3 IPSET_NAME"
@@ -1211,7 +1200,6 @@ case "$*" in
     manual_method "$@"
     check_files_for_entries "Manual"
     ;;
-  *) exit_error "Invalid parameter(s) passed." ;;
 esac
 
 if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ] && ! echo "$@" | grep -Eq 'src=|src_range='; then
