@@ -9,7 +9,7 @@
 # Added WireGuard support and limited the script to handling only HTTP and HTTPS traffic.
 # Currently not working with WireGuard:
 #  - VPN Server to VPN Client Routing
-# Date: 25-September-2024
+# Date: 27-September-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -116,16 +116,16 @@ IP_RE='([1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\.(0|[1-9][0-9]?|1[0-9]{2}|2[
 IP_RE_PREFIX='([1-9]?[12][0-9]|3[0-2])'
 CIDR_REGEX="$IP_RE/$IP_RE_PREFIX"
 
-SCR_NAME=$(basename "$0" | sed 's/.sh//')         # Script name without .sh
-SCR_DIR="$(cd "$(dirname "$0")" && pwd)"          # Script directory (absolute path)
-LOCK_FILE="/tmp/x3mRouting.lock"                  # Lock file to prevent multiple instances
-NAT_START="/jffs/scripts/nat-start"               # NAT initialization (e.g., firewall restart)
-WG_START="/jffs/scripts/wgclient-start"           # WireGuard client startup
-WAN_EVENT="/jffs/scripts/wan-event"               # WAN events (e.g., IP changes)
-DNSMASQ_CONF_ADD="/jffs/configs/dnsmasq.conf.add" # dnsmasq configuration file
+SCR_NAME=$(basename "$0" | sed 's/.sh//')     # Script name without .sh
+SCR_DIR="$(cd "$(dirname "$0")" && pwd)"      # Script directory (absolute path)
+LOCK_FILE="/tmp/x3mRouting.lock"              # Lock file to prevent multiple instances
+NAT_START="/jffs/scripts/nat-start"           # NAT initialization (e.g., firewall restart)
+WG_START="/jffs/scripts/wgclient-start"       # WireGuard client startup
+WAN_EVENT="/jffs/scripts/wan-event"           # WAN events (e.g., IP changes)
+DNSMASQ_CONF="/jffs/configs/dnsmasq.conf.add" # dnsmasq configuration file
 
 log_info() {
-  logger -st "($(basename "$0"))" "$$ $*"
+  logger -st "${SCR_NAME}[$$]" "$*"
 }
 
 log_warning() {
@@ -229,7 +229,7 @@ delete_entry_from_file() {
   if [ -s "$file" ]; then
     sed -i "\~\b$pattern\b~d" "$file"
     log_info "Entry matching '$pattern' deleted from $file"
-    [ "$file" = "$DNSMASQ_CONF_ADD" ] || Check_For_Shebang "$file"
+    [ "$file" = "$DNSMASQ_CONF" ] || Check_For_Shebang "$file"
   fi
 }
 
@@ -765,7 +765,7 @@ process_src_option() {
   while true; do
     # Check for 'dnsmasq=' parm
     if [ "$(echo "$@" | grep -c 'dnsmasq=')" -gt 0 ] || [ "$(echo "$@" | grep -c 'dnsmasq_file=')" -gt 0 ]; then
-      DNSMASQ_Param "$@"
+      dnsmasq_param "$@"
       break
     fi
     # Check for 'autoscan=' parm
@@ -836,50 +836,37 @@ process_src_option() {
   add_entry_to_file "$NAT_START" "$script_entry"
 }
 
-process_dnsmasq() {
-  dnsmasq_entry="ipset=$1"
+dnsmasq_param() {
+  dnsmasq_file=$(get_param "dnsmasq_file" "$@")
+  dnsmasq_param=$(get_param "dnsmasq" "$@")
 
-  if [ -f "$DNSMASQ_CONF_ADD" ]; then
-    if ! grep -qw "$dnsmasq_entry" $DNSMASQ_CONF_ADD; then
-      echo "$dnsmasq_entry" >>$DNSMASQ_CONF_ADD
-      log_info "Added $dnsmasq_entry to dnsmasq.conf.add"
-    fi
+  if [ -s "$dnsmasq_file" ]; then
+    domains=$(tr '\n' ',' <"$dnsmasq_file" | sed 's/,$//')
+  elif [ -n "$dnsmasq_param" ]; then
+    domains="$dnsmasq_param"
   else
-    echo "$dnsmasq_entry" >$DNSMASQ_CONF_ADD # if dnsmasq.conf.add does not exist, create dnsmasq.conf.add
-    log_info "Created dnsmasq.conf.add with $dnsmasq_entry"
+    exit_error "No DNSMASQ parameter specified."
   fi
+
+  [ ! -s "$DIR/$IPSET_NAME" ] && touch "$DIR/$IPSET_NAME"
+  process_dnsmasq "$(echo "$domains" | sed 's/,$//' | tr ',' '/')"
+}
+
+process_dnsmasq() {
+  dnsmasq_entry="ipset=/$1/$IPSET_NAME"
+
+  [ -s "$DNSMASQ_CONF" ] && sed -i "\~ipset=.*$IPSET_NAME~d" "$DNSMASQ_CONF"                  # Delete old entry
+  echo "$dnsmasq_entry" >>"$DNSMASQ_CONF" && log_info "Added $dnsmasq_entry to $DNSMASQ_CONF" # Add new entry
   service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
 
   create_ipset_list "DNSMASQ"
 
-  if [ -d "$DIR" ]; then
-    if [ "$(find "$DIR" -name "$IPSET_NAME" -mtime +1 -print 2>/dev/null)" = "$DIR/$IPSET_NAME" ]; then
-      ipset save "$IPSET_NAME" >"$DIR/$IPSET_NAME"
-    fi
-  fi
+  [ -n "$(find "$DIR/$IPSET_NAME" -mtime +1 2>/dev/null)" ] && ipset save "$IPSET_NAME" >"$DIR/$IPSET_NAME"
 
-  cru l | grep "$IPSET_NAME" || cru a "$IPSET_NAME" "0 2 * * * ipset save $IPSET_NAME > $DIR/$IPSET_NAME" >/dev/null 2>&1 && log_info "CRON schedule created: #$IPSET_NAME# '0 2 * * * ipset save $IPSET_NAME'"
-}
-
-DNSMASQ_Param() {
-  if [ "$(echo "$@" | grep -c "dnsmasq_file=")" -eq 1 ]; then
-    DNSMASQ_FILE=$(echo "$@" | sed -n "s/^.*dnsmasq_file=//p" | awk '{print $1}')
-    if [ -s "$DNSMASQ_FILE" ]; then
-      while read -r DOMAINS; do
-        COMMA_DOMAINS_LIST="$COMMA_DOMAINS_LIST,$DOMAINS"
-      done <"$DNSMASQ_FILE"
-      DOMAINS="$(echo "$COMMA_DOMAINS_LIST" | sed 's/^,*//;')"
-    fi
-    if [ -s "$DNSMASQ_CONF_ADD" ]; then
-      sed -i "\~ipset=.*$IPSET_NAME~d" $DNSMASQ_CONF_ADD
-    fi
+  if ! cru l | grep -q "$IPSET_NAME"; then
+    cru a "$IPSET_NAME" "0 2 * * * ipset save $IPSET_NAME > $DIR/$IPSET_NAME"
+    log_info "CRON schedule created: At 2:00 AM every day, run ipset save $IPSET_NAME"
   fi
-  if [ "$(echo "$@" | grep -c "dnsmasq=")" -eq 1 ]; then
-    DOMAINS=$(echo "$@" | sed -n "s/^.*dnsmasq=//p" | awk '{print $1}')
-  fi
-  DOMAINS_LIST=$(echo "$DOMAINS" | sed 's/,$//' | tr ',' '/')
-  dnsmasq_entry="/$DOMAINS_LIST/$IPSET_NAME"
-  process_dnsmasq "$dnsmasq_entry"
 }
 
 Dnsmasq_Log_File() {
@@ -895,6 +882,7 @@ Dnsmasq_Log_File() {
 }
 
 Harvest_Domains() {
+  #  [ ! -s "$DIR/$IPSET_NAME" ] && touch "$DIR/$IPSET_NAME"
   scan_space_list=$(echo "$@" | sed -n "s/^.*autoscan=//p" | awk '{print $1}' | tr ',' ' ')
 
   true >/opt/tmp/domain_list
@@ -912,8 +900,7 @@ Harvest_Domains() {
   if [ -z "$domain_list" ]; then
     exit_error "No domain names were harvested from $DNSMASQ_LOG_FILE"
   else
-    dnsmasq_entry="/$domain_list/$IPSET_NAME"
-    process_dnsmasq "$dnsmasq_entry"
+    process_dnsmasq "$domain_list"
   fi
 }
 
@@ -944,7 +931,7 @@ fetch_asn_to_ipset() {
   url="https://api.bgpview.io/asn/$asn/prefixes" # https://stat.ripe.net/data/as-routing-consistency/data.json?resource=
 
   log_info "Fetching data from: $url"
-  curl --retry 3 -sfL -o "$file" "$url" || exit_error "Fetching failed."
+  curl --retry 3 --connect-timeout 3 -sfL -o "$file" "$url" || exit_error "Fetching failed."
 
   tr -d "\\" <"$file" | grep -oE "$CIDR_REGEX" | sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME"
   sed "s/^/add $IPSET_NAME /" "$DIR/$IPSET_NAME" | ipset restore -! && rm -f $file
@@ -974,9 +961,9 @@ fetch_aws_to_ipset() {
   file="$DIR/aws-ip-ranges.json"
   url="https://ip-ranges.amazonaws.com/ip-ranges.json"
 
-  if [ ! -s "$file" ] || [ -n "$(find "$file" -type f -mtime +7 -print)" ]; then
+  if [ ! -s "$file" ] || [ -n "$(find "$file" -mtime +7)" ]; then
     log_info "Fetching data from: $url"
-    if ! curl --retry 3 -sfL -o "$file" "$url"; then
+    if ! curl --retry 3 --connect-timeout 3 -sfL -o "$file" "$url"; then
       if [ -s "$file" ]; then
         log_warning "Fetching failed. Using existing $file."
       else
@@ -1037,8 +1024,8 @@ create_routing_rules() {
 }
 
 delete_Ipset_list() {
-  if [ -s $DNSMASQ_CONF_ADD ]; then
-    delete_entry_from_file "$DNSMASQ_CONF_ADD" "$IPSET_NAME"
+  if [ -s $DNSMASQ_CONF ]; then
+    delete_entry_from_file "$DNSMASQ_CONF" "$IPSET_NAME"
     service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
   fi
 
@@ -1082,7 +1069,7 @@ delete_Ipset_list() {
     done
     # Delete the fwmark priority if no IPSET lists are using it
     for fwmark in $fwmarks; do
-      if ! iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$fwmark"; then
+      if ! iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$fwmark" >/dev/null; then
         ip rule del fwmark "$fwmark" 2>/dev/null && log_info "Deleted fwmark $fwmark"
       fi
     done
@@ -1099,7 +1086,7 @@ delete_Ipset_list() {
   fi
 
   log_info "Checking if IPSET backup file exists..."
-  if [ -s "$DIR/$IPSET_NAME" ]; then
+  if [ -f "$DIR/$IPSET_NAME" ]; then
     if [ "$DEL_FLAG" = "del" ]; then
       while true; do
         printf '\n%b%s%b\n' "$COLOR_RED" "DANGER ZONE!" "$COLOR_WHITE"
@@ -1200,12 +1187,12 @@ case "$*" in
     process_src_option "$@"
     ;;
   *dnsmasq=*) # Check for 'dnsmasq' parm which indicates DNSMASQ method & make sure 'autoscan' parm is not passed!
-    DNSMASQ_Param "$@"
-    check_files_for_entries "dnsmasq=$DOMAINS"
+    dnsmasq_param "$@"
+    check_files_for_entries "dnsmasq=$(get_param "dnsmasq" "$@")"
     ;;
   *dnsmasq_file=*) # Check for 'dnsmasq_file' parm
-    DNSMASQ_Param "$@"
-    check_files_for_entries "dnsmasq_file=$DNSMASQ_FILE"
+    dnsmasq_param "$@"
+    check_files_for_entries "dnsmasq_file=$(get_param "dnsmasq_file" "$@")"
     ;;
   *autoscan=*) # autoscan method
     Dnsmasq_Log_File
@@ -1227,7 +1214,7 @@ case "$*" in
   *) exit_error "Invalid parameter(s) passed." ;;
 esac
 
-if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
+if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ] && ! echo "$@" | grep -Eq 'src=|src_range='; then
   create_routing_rules
 fi
 
