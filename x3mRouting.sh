@@ -95,9 +95,6 @@ WAN_EVENT="/jffs/scripts/wan-event"           # WAN events (e.g., IP changes)
 DNSMASQ_CONF="/jffs/configs/dnsmasq.conf.add" # dnsmasq configuration file
 
 VPN_IDS="1 2 3 4 5 11 12 13 14 15"
-COLOR_GREEN='\033[0;32m'
-COLOR_RED='\033[0;31m'
-COLOR_RESET='\033[0m'
 IP_RE='([1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\.(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])){3}'
 IP_RE_PREFIX='([1-9]?[12][0-9]|3[0-2])'
 CIDR_REGEX="$IP_RE/$IP_RE_PREFIX"
@@ -212,16 +209,16 @@ delete_entry_from_file() {
   file="$1"
   pattern="$2"
 
-  if [ -s "$file" ] && grep -qw "$pattern" "$file"; then
-    if sed -i "\|\b$pattern\b|d" "$file"; then
-      log_info "Entry matching '$pattern' deleted from $file"
-      check_for_shebang "$file"
+  if [ -f "$file" ]; then
+    if grep -qw "$pattern" "$file"; then
+      sed -i "\|\b$pattern\b|d" "$file" && log_info "Entry matching '$pattern' deleted from $file"
       [ "$file" = "$DNSMASQ_CONF" ] && service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
     fi
+    check_if_empty "$file"
   fi
 }
 
-check_for_shebang() {
+check_if_empty() {
   file="$1"
 
   if [ -f "$file" ]; then
@@ -233,16 +230,16 @@ check_for_shebang() {
   if [ "$non_empty_lines" -eq 0 ]; then
     if [ "$DEL_FLAG" = "del" ]; then
       while true; do
-        echo "NOTICE! $file is empty. Delete it? [Y/n]: "
+        printf "NOTICE! '%s' is empty. Delete it? [Y/n]:" "$file"
         read -r "OPTION"
         case "$OPTION" in
-          [yY][eE][sS] | [yY] | '') rm "$file" && log_info "File $file deleted." && break ;;
-          [nN][oO] | [nN]) log_info "$file not deleted." && break ;;
+          [yY][eE][sS] | [yY] | '') rm "$file" && log_info "File '$file' deleted." && break ;;
+          [nN][oO] | [nN]) break ;;
           *) echo "Invalid option. File not deleted." ;;
         esac
       done
     elif [ "$DEL_FLAG" = "FORCE" ]; then
-      rm "$file" && log_info "File $file deleted."
+      rm "$file" && log_info "File '$file' deleted."
     fi
   fi
 }
@@ -250,7 +247,7 @@ check_for_shebang() {
 delete_Ipset_list() { # TODO: Refactor this function
 
   log_info "Checking files for entry..."
-  for file in "$NAT_START" "$WG_START" "$WAN_EVENT" "$DNSMASQ_CONF"; do
+  for file in "$NAT_START" "$WG_START" "$WAN_EVENT" "$DNSMASQ_CONF" "$DIR/$IPSET_NAME"; do
     delete_entry_from_file "$file" "$IPSET_NAME"
   done
 
@@ -260,8 +257,7 @@ delete_Ipset_list() { # TODO: Refactor this function
     done
   done
 
-  # Delete PREROUTING Rule for VPN Server to IPSET & POSTROUTING Rule
-  log_info "Checking POSTROUTING iptables rules..."
+  log_info "Checking POSTROUTING iptables rules..." # Delete PREROUTING & POSTROUTING Rule for VPN Server to IPSET
   for server_tun in tun21 tun22 wgs1; do
     server=$(echo "$server_tun" | sed 's/tun21/1/; s/tun22/2/; s/wgs1/3/')
     tun="$(iptables -nvL PREROUTING -t mangle --line | grep "$server_tun" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $7}')"
@@ -300,26 +296,24 @@ delete_Ipset_list() { # TODO: Refactor this function
 
   log_info "Checking if IPSET backup file exists..."
   if [ -f "$DIR/$IPSET_NAME" ]; then
+    non_empty_lines=$(grep -cvE '^\s*$' "$DIR/$IPSET_NAME")
     if [ "$DEL_FLAG" = "del" ]; then
       while true; do
-        printf '\n%b%s%b\n' "$COLOR_RED" "DANGER ZONE!" "$COLOR_RESET"
-        printf '\n%s%b%s%b\n' "Delete the backup file in " "$COLOR_GREEN" "$DIR/$IPSET_NAME" "$COLOR_RESET"
-        printf '%b[1]%b  --> Yes\n' "$COLOR_GREEN" "$COLOR_RESET"
-        printf '%b[2]%b  --> No\n' "$COLOR_GREEN" "$COLOR_RESET"
-        echo
-        printf '[1-2]: '
-        read -r "CONFIRM_DEL"
-        case "$CONFIRM_DEL" in
-          1)
-            rm "$DIR/$IPSET_NAME" && printf '\n%b%s%b%s\n' "$COLOR_GREEN" "$DIR/$IPSET_NAME" "$COLOR_RESET" " file deleted."
-            echo
-            return
-            ;;
-          *) return ;;
+        if [ "$non_empty_lines" -eq 0 ]; then
+          printf "NOTICE! The backup '%s' is empty. Delete it? [Y/n]:" "$DIR/$IPSET_NAME" && default="y"
+        else
+          printf "WARNING! The backup '%s' is NOT empty. Delete it? [y/N]:" "$DIR/$IPSET_NAME" && default="n"
+        fi
+        read -r "OPTION"
+        OPTION=${OPTION:-$default}
+        case "$OPTION" in
+          [yY][eE][sS] | [yY]) rm "$DIR/$IPSET_NAME" && log_info "File '$DIR/$IPSET_NAME' deleted." && break ;;
+          [nN][oO] | [nN]) break ;;
+          *) echo "Invalid option. File not deleted." ;;
         esac
       done
     elif [ "$DEL_FLAG" = "FORCE" ]; then
-      rm "$DIR/$IPSET_NAME" && printf '\n%b%s%b%s\n' "$COLOR_GREEN" "$DIR/$IPSET_NAME" "$COLOR_RESET" " file deleted."
+      rm "$DIR/$IPSET_NAME" && log_info "File '$DIR/$IPSET_NAME' deleted."
     fi
   fi
 }
@@ -490,7 +484,7 @@ VPN_Server_to_VPN_Client() { # TODO: Refactor this function (Work only with Open
       CMD="awk '\$5 == \"POSTROUTING\" && \$9 == \"vpn_server${vpn_server_instance}_sn)\\\"/24\"  && \$11 == \"$IFACE\" && \$13 == \"MASQUERADE\" {next} {print \$0}' \"$vpnc_up_file\" > \"$vpnc_up_file.tmp\" && mv \"$vpnc_up_file.tmp\" \"$vpnc_up_file\""
       eval "$CMD"
       logger -st "($(basename "$0"))" $$ "iptables entry for VPN Client ${VPN_CLIENT_INSTANCE} deleted from $vpnc_up_file"
-      check_for_shebang "$vpnc_up_file"
+      check_if_empty "$vpnc_up_file"
     fi
 
     # vpnserverX-down file
@@ -499,14 +493,14 @@ VPN_Server_to_VPN_Client() { # TODO: Refactor this function (Work only with Open
       CMD="awk '\$5 == \"POSTROUTING\" && \$9 == \"vpn_server${vpn_server_instance}_sn)\\\"/24\"  && \$11 == \"$IFACE\" && \$13 == \"MASQUERADE\" {next} {print \$0}' \"$vpnc_down_file\" > \"$vpnc_down_file.tmp\" && mv \"$vpnc_down_file.tmp\" \"$vpnc_down_file\""
       eval "$CMD"
       logger -st "($(basename "$0"))" $$ "iptables entry deleted VPN Client ${VPN_CLIENT_INSTANCE} from $vpnc_down_file"
-      check_for_shebang "$vpnc_down_file"
+      check_if_empty "$vpnc_down_file"
     fi
 
     # nat-start File
     if [ -s "$NAT_START" ]; then
       sed "/server=$vpn_server_instance client=$VPN_CLIENT_INSTANCE/d" "$NAT_START" >"$NAT_START.tmp" && mv "$NAT_START.tmp" "$NAT_START"
       logger -t "($(basename "$0"))" $$ "$script_entry entry deleted from $NAT_START"
-      check_for_shebang "$NAT_START"
+      check_if_empty "$NAT_START"
     fi
 
     # nvram get vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist
@@ -614,10 +608,10 @@ dnsmasq_param() {
     exit_error "No DNSMASQ parameter specified."
   fi
 
-  process_dnsmasq "$(echo "$domains" | tr ',' '/' | sed 's|/$||')"
+  update_dnsmasq_conf "$(echo "$domains" | tr ',' '/' | sed 's|/$||')"
 }
 
-process_dnsmasq() {
+update_dnsmasq_conf() {
   dnsmasq_entry="ipset=/$1/$IPSET_NAME"
 
   [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*$IPSET_NAME|d" "$DNSMASQ_CONF"
@@ -638,7 +632,7 @@ harvest_dnsmasq_queries() {
   domains=$(grep -E "$scan_list" "$DNSMASQ_LOG" | awk '/query/ {print $(NF-2)}' | sort -u | tr '\n' '/' | sed 's|/$||')
 
   if [ -n "$domains" ]; then
-    process_dnsmasq "$domains"
+    update_dnsmasq_conf "$domains"
   else
     exit_error "No domain names were harvested from $DNSMASQ_LOG"
   fi
@@ -720,11 +714,99 @@ ip_param() {
   ips=$(get_param "ip" "$@" | tr ',' ' ')
   [ -z "$ips" ] && exit_error "'ip' parameter cannot be empty."
 
-  check_entware 60 || exit_error "Entware not ready. Unable to access ipset save/restore location"
-
   [ -n "$ips" ] && for ip in $ips; do
     echo "$ip" | grep -oE "$IP_RE(/$IP_RE_PREFIX)?" || log_warning "$ip is an invalid IP or CIDR. Skipping entry." >&2
   done | sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME"
+}
+
+parse_protocol_and_ports() { # TODO: Refactor this function (protocols="tcp:80,443 udp:53 icmp")
+  protocol=$(get_param "protocol" "$*" | awk '{print tolower($0)}')
+  ports=$(get_param "ports" "$*")
+
+  PROTOCOL_PORT_RULE=""
+  PROTOCOL_PORT_PARAMS=""
+
+  if [ -n "$protocol" ]; then
+    protocols=$(awk '{print tolower($1)}' /etc/protocols | grep -v '^#' | tr '\n' ' ')
+
+    echo "$protocols" | grep -qw "$protocol" || exit_error "Unsupported protocol: '$protocol'."
+
+    if [ -n "$ports" ]; then
+      if ! echo "$ports" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
+        exit_error "The 'ports=' parameter should contain only digits and commas."
+      elif ! echo "tcp udp udplite sctp dccp" | grep -qw "$protocol"; then
+        exit_error "Unsupported protocol '$protocol' for port parameter. Accept only TCP, UDP, UDPLITE, SCTP, DCCP."
+      else
+        port_list=$(echo "$ports" | tr ',' ' ')
+        for port in $port_list; do
+          if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+            exit_error "Port numbers in 'ports=' must be between 1 and 65535."
+          fi
+        done
+      fi
+    fi
+
+    if [ -n "$protocol" ] && [ -n "$ports" ]; then
+      PROTOCOL_PORT_RULE="-p $protocol -m multiport --dports $ports"
+      PROTOCOL_PORT_PARAMS="protocol=$protocol ports=$ports"
+    elif [ -n "$protocol" ] && [ -z "$ports" ]; then
+      PROTOCOL_PORT_RULE="-p $protocol"
+      PROTOCOL_PORT_PARAMS="protocol=$protocol"
+    fi
+  fi
+}
+
+parse_src_option() {
+  src=$(get_param "src" "$@")
+  src_range=$(get_param "src_range" "$@")
+
+  SRC_RULE=""
+  SRC_PARAMS=""
+
+  if [ -n "$src" ]; then
+    echo "$src" | grep -qE "^$IP_RE$" || exit_error "'src=$src' not a valid IP address."
+
+    SRC_RULE="--src $src"
+    SRC_PARAMS="src=$src"
+  fi
+
+  if [ -n "$src_range" ]; then
+    echo "$src_range" | grep -qE "^$IP_RE-$IP_RE$" || exit_error "'src_range=$src_range' not a valid IP range."
+
+    ip_start=$(echo "$src_range" | awk -F '[-.]' '{print ($1 * 256^3) + ($2 * 256^2) + ($3 * 256) + $4}')
+    ip_end=$(echo "$src_range" | awk -F '[-.]' '{print ($5 * 256^3) + ($6 * 256^2) + ($7 * 256) + $8}')
+    [ "$ip_start" -gt "$ip_end" ] && exit_error "'src_range=$src_range' is not valid, start IP greater than end IP."
+
+    SRC_RULE="--src-range $src_range"
+    SRC_PARAMS="src_range=$src_range"
+  fi
+}
+
+check_files_for_entries() {
+
+  script_entry="sh $SCR_DIR/$SCR_NAME.sh"
+
+  if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
+    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME $SRC_PARAMS $PROTOCOL_PORT_PARAMS"
+  else
+    script_entry="$script_entry ipset_name=$IPSET_NAME"
+  fi
+
+  [ "$DIR" != "/opt/tmp" ] && script_entry="$script_entry dir=$DIR"
+
+  add_entry_to_file "$NAT_START" "$script_entry"
+
+  if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
+    vpnid=$([ "$SRC_IFACE" = 0 ] && echo "$DST_IFACE" || echo "$SRC_IFACE")
+
+    ipt_del_entry="iptables -t mangle -D PREROUTING -i br0 $SRC_RULE -m set --match-set $IPSET_NAME dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK 2>/dev/null"
+    ipt_add_entry="iptables -t mangle -A PREROUTING -i br0 $SRC_RULE -m set --match-set $IPSET_NAME dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK"
+
+    for entry in "$ipt_del_entry" "$ipt_add_entry"; do
+      add_entry_to_file "$SCR_DIR/vpnclient${vpnid}-route-up" "$entry"
+    done
+    add_entry_to_file "$SCR_DIR/vpnclient${vpnid}-route-pre-down" "$ipt_del_entry"
+  fi
 }
 
 set_routing_tags() {
@@ -809,112 +891,16 @@ set_wg_rp_filter() {
     if [ -f "/proc/sys/net/ipv4/conf/$ROUTE_TABLE/rp_filter" ]; then
       eval "$rp_filter"
     else
-      log_info "rp_filter file not found for $ROUTE_TABLE, VPN server likely disabled."
+      log_info "rp_filter file not found, VPN server '$ROUTE_TABLE' likely disabled."
     fi
 
-    # Ensure 'rp_filter' is applied persistently across reboots.
     for file in "$NAT_START" "$WG_START" "$WAN_EVENT"; do
-      add_entry_to_file "$file" "$rp_filter"
+      add_entry_to_file "$file" "$rp_filter" # Ensure 'rp_filter' is set across restart and reboot.
     done
-  fi
-}
-
-parse_protocol_and_ports() { # TODO: Refactor this function (protocols="tcp:80,443 udp:53 icmp")
-  args="$*"
-
-  PROTOCOL_PORT_RULE=""
-  PROTOCOL_PORT_PARAMS=""
-
-  if echo "$args" | grep -Fq "protocol="; then
-    protocols=$(awk '{print tolower($1)}' /etc/protocols | grep -v '^#' | tr '\n' ' ')
-    protocol=$(get_param "protocol" "$args" | awk '{print tolower($0)}')
-
-    if ! echo "$protocols" | grep -qw "$protocol"; then
-      exit_error "Unsupported protocol: '$protocol'."
-    fi
-
-    if echo "$args" | grep -Fq "ports="; then
-      ports=$(get_param "ports" "$args")
-      if echo "$ports" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
-        port_list=$(echo "$ports" | tr ',' ' ')
-        for port in $port_list; do
-          if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-            exit_error "Port numbers in 'ports=' must be between 1 and 65535."
-          fi
-        done
-      else
-        exit_error "The 'ports=' parameter should contain only digits and commas."
-      fi
-    fi
-
-    if [ -n "$ports" ] && ! echo "tcp udp udplite sctp dccp" | grep -qw "$protocol"; then
-      exit_error "Unsupported protocol '$protocol' for port parameter. Accept only TCP, UDP, UDPLITE, SCTP, DCCP."
-    elif [ -n "$ports" ]; then
-      PROTOCOL_PORT_RULE="-p $protocol -m multiport --dports $ports"
-      PROTOCOL_PORT_PARAMS="protocol=$protocol ports=$ports"
-    else
-      PROTOCOL_PORT_RULE="-p $protocol"
-      PROTOCOL_PORT_PARAMS="protocol=$protocol"
-    fi
-  fi
-}
-
-parse_src_option() {
-  src=$(get_param "src" "$@")
-  src_range=$(get_param "src_range" "$@")
-
-  SRC_RULE=""
-  SRC_PARAMS=""
-
-  if [ -n "$src" ]; then
-    echo "$src" | grep -qE "^$IP_RE$" || exit_error "'src=$src' not a valid IP address."
-
-    SRC_RULE="--src $src"
-    SRC_PARAMS="src=$src"
-  fi
-
-  if [ -n "$src_range" ]; then
-    echo "$src_range" | grep -qE "^$IP_RE-$IP_RE$" || exit_error "'src_range=$src_range' not a valid IP range."
-
-    ip_start=$(echo "$src_range" | awk -F '[-.]' '{print ($1 * 256^3) + ($2 * 256^2) + ($3 * 256) + $4}')
-    ip_end=$(echo "$src_range" | awk -F '[-.]' '{print ($5 * 256^3) + ($6 * 256^2) + ($7 * 256) + $8}')
-    [ "$ip_start" -gt "$ip_end" ] && exit_error "'src_range=$src_range' is not valid, start IP greater than end IP."
-
-    SRC_RULE="--src-range $src_range"
-    SRC_PARAMS="src_range=$src_range"
-  fi
-}
-
-check_files_for_entries() {
-
-  script_entry="sh $SCR_DIR/$SCR_NAME.sh"
-
-  if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME $SRC_PARAMS $PROTOCOL_PORT_PARAMS"
-  else
-    script_entry="$script_entry ipset_name=$IPSET_NAME"
-  fi
-
-  [ "$DIR" != "/opt/tmp" ] && script_entry="$script_entry dir=$DIR"
-
-  add_entry_to_file "$NAT_START" "$script_entry"
-
-  if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-    vpnid=$([ "$SRC_IFACE" = 0 ] && echo "$DST_IFACE" || echo "$SRC_IFACE")
-
-    ipt_del_entry="iptables -t mangle -D PREROUTING -i br0 $SRC_RULE -m set --match-set $IPSET_NAME dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK 2>/dev/null"
-    ipt_add_entry="iptables -t mangle -A PREROUTING -i br0 $SRC_RULE -m set --match-set $IPSET_NAME dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK"
-
-    for entry in "$ipt_del_entry" "$ipt_add_entry"; do
-      add_entry_to_file "$SCR_DIR/vpnclient${vpnid}-route-up" "$entry"
-    done
-    add_entry_to_file "$SCR_DIR/vpnclient${vpnid}-route-pre-down" "$ipt_del_entry"
   fi
 }
 
 setup_ipset_list() {
-  check_entware 120 || exit_error "Entware not ready. Unable to access ipset save/restore location"
-
   if ! ipset list -n "$IPSET_NAME" >/dev/null 2>&1; then
     ipset create "$IPSET_NAME" hash:net family inet hashsize 1024 maxelem 65536 && touch "$DIR/$IPSET_NAME"
     log_info "Created IPSET: $IPSET_NAME and file: $DIR/$IPSET_NAME"
@@ -943,6 +929,7 @@ if [ "$1" = "help" ] || [ "$1" = "-h" ]; then
   exit 0
 fi
 
+check_entware 120 || exit_error "Entware not ready. Unable to access ipset save/restore location"
 log_info "Starting Script Execution $*"
 check_lock "$@"
 
@@ -1012,14 +999,17 @@ case "$@" in
 esac
 
 if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-  set_routing_tags
-  set_fwmark_ip_rule
-  set_wg_rp_filter
   parse_protocol_and_ports "$@" # Sets PROTOCOL_PORT_RULE & PROTOCOL_PORT_PARAMS
   parse_src_option "$@"         # Sets SRC_RULE & SRC_PARAMS
   check_files_for_entries "$@"
+  set_routing_tags
+  set_fwmark_ip_rule
+  set_wg_rp_filter
   setup_ipset_list
   create_routing_rules
+elif echo "$1" | grep -Eq '^ipset_name='; then
+  check_files_for_entries "$@"
+  setup_ipset_list
 fi
 
 exit_routine
