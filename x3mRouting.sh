@@ -9,7 +9,7 @@
 # Integrated WireGuard client/server and protocol/ports support.
 # Currently not working with WireGuard:
 #  - VPN Server to VPN Client Routing
-# Last updated: 29-Sep-2024
+# Last updated: 30-Sep-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -116,13 +116,13 @@ log_warning() {
 }
 
 exit_error() {
-  if [ "$LOCK_ACTIVE" = "true" ]; then release_lock; fi
+  [ "$LOCK_ACTIVE" = "true" ] && release_lock
   log_info "ERROR! $*"
   exit 1
 }
 
 exit_routine() {
-  if [ "$LOCK_ACTIVE" = "true" ]; then release_lock; fi
+  [ "$LOCK_ACTIVE" = "true" ] && release_lock
   log_info "Completed Script Execution"
   exit 0
 }
@@ -212,8 +212,8 @@ delete_entry_from_file() {
   file="$1"
   pattern="$2"
 
-  if [ -s "$file" ] && grep -q "\b$pattern\b" "$file"; then
-    if sed -i "\~\b$pattern\b~d" "$file"; then
+  if [ -s "$file" ] && grep -qw "$pattern" "$file"; then
+    if sed -i "\|\b$pattern\b|d" "$file"; then
       log_info "Entry matching '$pattern' deleted from $file"
       check_for_shebang "$file"
       [ "$file" = "$DNSMASQ_CONF" ] && service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
@@ -406,7 +406,7 @@ server_param() { # TODO: Refactor this function (Special processing for VPN Serv
         vpn_server_to_ipset "$server"
       fi
     done
-    # nat-start File
+
     script_entry="sh $SCR_DIR/x3mRouting.sh $1 $2 $PROTOCOL_PORT_PARAMS"
     if [ "$(echo "$@" | grep -cw 'del')" -eq 0 ] || [ "$(echo "$@" | grep -cw 'del=force')" -eq 0 ]; then
       add_entry_to_file "$NAT_START" "$script_entry"
@@ -607,55 +607,46 @@ dnsmasq_param() {
   dnsmasq_param=$(get_param "dnsmasq" "$@")
 
   if [ -s "$dnsmasq_file" ]; then
-    domains=$(tr '\n' ',' <"$dnsmasq_file" | sed 's/,$//')
+    domains=$(tr '\n' '/' <"$dnsmasq_file")
   elif [ -n "$dnsmasq_param" ]; then
     domains="$dnsmasq_param"
   else
     exit_error "No DNSMASQ parameter specified."
   fi
 
-  process_dnsmasq "$(echo "$domains" | sed 's/,$//' | tr ',' '/')"
+  process_dnsmasq "$(echo "$domains" | tr ',' '/' | sed 's|/$||')"
 }
 
 process_dnsmasq() {
   dnsmasq_entry="ipset=/$1/$IPSET_NAME"
 
-  [ -s "$DNSMASQ_CONF" ] && sed -i "\~ipset=.*$IPSET_NAME~d" "$DNSMASQ_CONF"
+  [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*$IPSET_NAME|d" "$DNSMASQ_CONF"
   echo "$dnsmasq_entry" >>"$DNSMASQ_CONF" && log_info "Added $dnsmasq_entry to $DNSMASQ_CONF"
   service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
 }
 
-dnsmasq_log_file() {
-  for log_file in "/opt/var/log/dnsmasq.log" "/tmp/var/log/dnsmasq.log"; do
-    [ -s "$log_file" ] && DNSMASQ_LOG_FILE="$log_file" && break
+harvest_dnsmasq_queries() {
+  scan_list=$(get_param "autoscan" "$@" | tr ',' '|')
+  [ -z "$scan_list" ] && exit_error "'autoscan' parameter cannot be empty."
+
+  for file in "/opt/var/log/dnsmasq.log" "/tmp/var/log/dnsmasq.log"; do
+    [ -s "$file" ] && DNSMASQ_LOG="$file" && break
   done
-  [ -z "$DNSMASQ_LOG_FILE" ] && DNSMASQ_LOG_FILE=$(find / -name "dnsmasq.log" -type f -print -quit 2>/dev/null)
-  [ -z "$DNSMASQ_LOG_FILE" ] && exit_error "dnsmasq.log file NOT found!"
-}
+  [ -z "$DNSMASQ_LOG" ] && DNSMASQ_LOG=$(find / -name "dnsmasq.log" -type f -print -quit 2>/dev/null)
+  [ -z "$DNSMASQ_LOG" ] && exit_error "dnsmasq.log file NOT found!"
 
-Harvest_Domains() { # TODO: Refactor this function
-  scan_list=$(get_param "autoscan" "$@" | tr ',' ' ')
+  domains=$(grep -E "$scan_list" "$DNSMASQ_LOG" | awk '/query/ {print $(NF-2)}' | sort -u | tr '\n' '/' | sed 's|/$||')
 
-  true >/opt/tmp/domain_list
-
-  for top_level_domain in $scan_list; do
-    scan_list=$(grep "$top_level_domain" "/opt/var/log/dnsmasq.log" | grep query | awk '{print $(NF-2)}' | awk -F\. '{print $(NF-1) FS $NF}' | sort | uniq)
-    [ -n "$scan_list" ] && echo "$scan_list" >>/opt/tmp/domain_list && log_info "Added $scan_list during autoscan"
-  done
-
-  domain_list=$(awk '{ print $1 }' "/opt/tmp/domain_list" | sort -u | tr '\n' '/' | sed -n 's/\/$/\n/p')
-
-  rm /opt/tmp/domain_list
-
-  if [ -z "$domain_list" ]; then
-    exit_error "No domain names were harvested from $DNSMASQ_LOG_FILE"
+  if [ -n "$domains" ]; then
+    process_dnsmasq "$domains"
   else
-    process_dnsmasq "$domain_list"
+    exit_error "No domain names were harvested from $DNSMASQ_LOG"
   fi
 }
 
 asnum_param() {
   asn=$(get_param "asnum" "$@" | tr ',' ' ')
+  [ -z "$asn" ] && exit_error "'asnum' parameter cannot be empty."
 
   for asn in $asn; do
     prefix=$(printf '%-.2s' "$asn")
@@ -686,6 +677,7 @@ fetch_asn_to_ipset() {
 
 aws_param() {
   aws_regions=$(get_param "aws_region" "$@" | tr ',' ' ' | awk '{print toupper($0)}')
+  [ -z "$aws_regions" ] && exit_error "'aws_region' parameter cannot be empty."
 
   for aws_region in $aws_regions; do
     case "$aws_region" in
@@ -726,6 +718,7 @@ fetch_aws_to_ipset() {
 
 ip_param() {
   ips=$(get_param "ip" "$@" | tr ',' ' ')
+  [ -z "$ips" ] && exit_error "'ip' parameter cannot be empty."
 
   check_entware 60 || exit_error "Entware not ready. Unable to access ipset save/restore location"
 
@@ -950,8 +943,14 @@ if [ "$1" = "help" ] || [ "$1" = "-h" ]; then
   exit 0
 fi
 
-log_info "Starting Script Execution" "$@"
+log_info "Starting Script Execution $*"
 check_lock "$@"
+
+# Check if user specified 'dir=' parameter
+DIR=$(case "$@" in
+  *dir=*) get_param "dir" "$@" ;; # Mount point/directory for backups
+  *) echo "/opt/tmp" ;;
+esac)
 
 # Set SRC_IFACE and DST_IFACE unless 'server=' or 'ipset_name=' are used
 if echo "$1" | grep -q '^server='; then # TODO: Simplify logic
@@ -959,12 +958,14 @@ if echo "$1" | grep -q '^server='; then # TODO: Simplify logic
     exit_error "Second parameter must be 'client=' or 'ipset_name='."
   else
     IPSET_NAME=$(get_param "ipset_name" "$@")
+    [ -z "$IPSET_NAME" ] && exit_error "'ipset_name' parameter cannot be empty."
   fi
 elif echo "$1" | grep -Eq '^ipset_name='; then
   if echo "$2" | grep -Eq '^(src=|src_range=)'; then
     exit_error "'src=' or 'src_range=' cannot be used with 'ipset_name='."
   else
     IPSET_NAME=$(get_param "ipset_name" "$@")
+    [ -z "$IPSET_NAME" ] && exit_error "'ipset_name' parameter cannot be empty."
   fi
 elif echo "$1" | grep -Eq '^[0-5]|1[1-5]$'; then
   SRC_IFACE=$1
@@ -984,6 +985,13 @@ elif echo "$1" | grep -Eq '^[0-5]|1[1-5]$'; then
     else
       exit_error "Third parameter must be IPSET name"
     fi
+
+    if ! echo "$@" | grep -qE '\s(del|dnsmasq|autoscan|asnum|aws_region|ip)' && # none of the params are present
+      [ ! -s "$DIR/$IPSET_NAME" ] &&                                            # file does not exist or is empty
+      ! ipset list -n | grep -qFx "$IPSET_NAME" &&                              # ipset does not exist
+      ! grep -q "ipset=.*$IPSET_NAME" "$DNSMASQ_CONF"; then                     # no entry in $DNSMASQ_CONF
+      exit_error "$DIR/$IPSET_NAME missing or empty, ipset $IPSET_NAME not found, no entry for $IPSET_NAME in $DNSMASQ_CONF."
+    fi
   else
     exit_error "Second parameter must be 0 (WAN), 1-5 (WireGuard), or 11-15 (OpenVPN)."
   fi
@@ -991,21 +999,12 @@ else
   exit_error "First parameter must be 'server=', 'ipset_name=', 0 (WAN), 1-5 (WireGuard), or 11-15 (OpenVPN)."
 fi
 
-# Check if user specified 'dir=' parameter
-DIR=$(case "$*" in
-  *dir=*) get_param "dir" "$@" ;; # Mount point/directory for backups
-  *) echo "/opt/tmp" ;;
-esac)
-
-case "$*" in
+case "$@" in
   *del=force*) DEL_FLAG="FORCE" && delete_Ipset_list && exit_routine ;;
   *del*) DEL_FLAG="del" && delete_Ipset_list && exit_routine ;;
   *server=*) server_param "$@" ;;
   *dnsmasq=* | *dnsmasq_file=*) dnsmasq_param "$@" ;;
-  *autoscan=*)
-    dnsmasq_log_file
-    Harvest_Domains "$@"
-    ;;
+  *autoscan=*) harvest_dnsmasq_queries "$@" ;;
   *asnum=*) asnum_param "$@" ;;
   *aws_region=*) aws_param "$@" ;;
   *ip=*) ip_param "$@" ;;
