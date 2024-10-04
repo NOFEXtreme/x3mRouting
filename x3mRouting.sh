@@ -9,7 +9,7 @@
 # Integrated WireGuard client/server and protocol/ports support.
 # Currently not working with WireGuard:
 #  - VPN Server to VPN Client Routing
-# Last updated: 30-Sep-2024
+# Last updated: 04-Oct-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -598,25 +598,12 @@ vpn_server_to_ipset() { # TODO: Refactor this function
 
 dnsmasq_param() {
   dnsmasq_file=$(get_param "dnsmasq_file" "$@")
-  dnsmasq_param=$(get_param "dnsmasq" "$@")
+  domains=$(get_param "dnsmasq" "$@" | tr ',' '/' | sed 's|/$||')
 
-  if [ -s "$dnsmasq_file" ]; then
-    domains=$(tr '\n' '/' <"$dnsmasq_file")
-  elif [ -n "$dnsmasq_param" ]; then
-    domains="$dnsmasq_param"
-  else
-    exit_error "No DNSMASQ parameter specified."
-  fi
+  [ -z "$domains" ] && [ -s "$dnsmasq_file" ] && domains=$(tr '\n' '/' <"$dnsmasq_file" | sed 's|/$||')
+  [ -z "$domains" ] && exit_error "No DNSMASQ parameter specified."
 
-  update_dnsmasq_conf "$(echo "$domains" | tr ',' '/' | sed 's|/$||')"
-}
-
-update_dnsmasq_conf() {
-  dnsmasq_entry="ipset=/$1/$IPSET_NAME"
-
-  [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*$IPSET_NAME|d" "$DNSMASQ_CONF"
-  echo "$dnsmasq_entry" >>"$DNSMASQ_CONF" && log_info "Added $dnsmasq_entry to $DNSMASQ_CONF"
-  service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
+  update_dnsmasq_conf "$domains"
 }
 
 harvest_dnsmasq_queries() {
@@ -636,6 +623,14 @@ harvest_dnsmasq_queries() {
   else
     exit_error "No domain names were harvested from $DNSMASQ_LOG"
   fi
+}
+
+update_dnsmasq_conf() {
+  domains="$1"
+
+  [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*$IPSET_NAME|d" "$DNSMASQ_CONF"
+  echo "ipset=/$domains/$IPSET_NAME" >>"$DNSMASQ_CONF" && log_info "Added $domains to $DNSMASQ_CONF"
+  service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
 }
 
 asnum_param() {
