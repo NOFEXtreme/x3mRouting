@@ -9,7 +9,7 @@
 # Integrated WireGuard client/server and protocol/ports support.
 # Currently not working with WireGuard:
 #  - VPN Server to VPN Client Routing
-# Last updated: 04-Oct-2024
+# Last updated: 20-Oct-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -21,9 +21,6 @@
 #   Source code can be found at https://github.com/Adamm00/IPSet_ASUS
 #
 ####################################################################################################
-# shellcheck disable=SC2086 # Double quote to prevent globbing and word splitting on $PROTOCOL_PORT_RULE
-#___________________________________________________________________________________________________
-#
 # Required parameters are listed inside the braces: { }
 # Optional parameters are listed inside of the brackets [ ]
 # Valid parameter values are listed in parenthesis ( )
@@ -77,9 +74,9 @@
 #                          # a shebang exists. **Will not** prompt for permission before deleting a
 #                          # file if only a shebang exists.
 #---------------------------------------------------------------------------------------------------
-# VPN Server to VPN Client Routing:
+# VPN Server to VPN Client Routing: (Work only with OpenVPN)
 #
-# x3mRouting {'server='1|2|all} {'client='1|2|3|4|5} ['del'] ['del=force']
+# x3mRouting {'server='1|2} {'client='11|12|13|14|15} ['del'] ['del=force']
 #---------------------------------------------------------------------------------------------------
 # VPN Server to existing LAN routing rules for one or more IPSET lists
 #
@@ -87,7 +84,7 @@
 #___________________________________________________________________________________________________
 
 SCR_NAME=$(basename "$0" | sed 's/.sh//')     # Script name without .sh
-SCR_DIR="$(cd "$(dirname "$0")" && pwd)"      # Script directory (absolute path)
+SCR_DIR=$(dirname "$(readlink -f "$0")")      # Script directory (absolute path)
 LOCK_FILE="/tmp/$SCR_NAME.lock"               # Lock file to prevent multiple instances
 NAT_START="/jffs/scripts/nat-start"           # NAT initialization (e.g., firewall restart)
 WG_START="/jffs/scripts/wgclient-start"       # WireGuard client startup
@@ -120,7 +117,7 @@ exit_error() {
 
 exit_routine() {
   [ "$LOCK_ACTIVE" = "true" ] && release_lock
-  log_info "Completed Script Execution"
+  log_info "Complete script execution"
   exit 0
 }
 
@@ -201,7 +198,7 @@ add_entry_to_file() {
 
   if ! grep -Fq "$entry" "$file"; then
     echo "$entry # $SCR_NAME for ipset name: $IPSET_NAME" >>"$file"
-    log_info "$entry added to $file"
+    log_info "Add '$entry' to $file"
   fi
 }
 
@@ -233,36 +230,31 @@ check_if_empty() {
         printf "NOTICE! '%s' is empty. Delete it? [Y/n]:" "$file"
         read -r "OPTION"
         case "$OPTION" in
-          [yY][eE][sS] | [yY] | '') rm "$file" && log_info "File '$file' deleted." && break ;;
+          [yY][eE][sS] | [yY] | '') rm "$file" && log_info "Deleted file $file" && break ;;
           [nN][oO] | [nN]) break ;;
           *) echo "Invalid option. File not deleted." ;;
         esac
       done
     elif [ "$DEL_FLAG" = "FORCE" ]; then
-      rm "$file" && log_info "File '$file' deleted."
+      rm "$file" && log_info "Deleted file $file"
     fi
   fi
 }
 
-delete_Ipset_list() { # TODO: Refactor this function
-
+delete_Ipset_list() { # TODO: Simplify logic
   log_info "Checking files for entry..."
   for file in "$NAT_START" "$WG_START" "$WAN_EVENT" "$DNSMASQ_CONF" "$DIR/$IPSET_NAME"; do
     delete_entry_from_file "$file" "$IPSET_NAME"
   done
 
-  log_info "Checking POSTROUTING iptables rules..." # Delete PREROUTING & POSTROUTING Rule for VPN Server to IPSET
-  for server_tun in tun21 tun22 wgs1; do
-    server=$(echo "$server_tun" | sed 's/tun21/1/; s/tun22/2/; s/wgs1/3/')
-    tun="$(iptables -nvL PREROUTING -t mangle --line | grep "$server_tun" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $7}')"
-    if [ -n "$tun" ]; then
-      define_iface "$IPSET_NAME"
-      VPN_CLIENT_INSTANCE=$(echo "$IFACE" | awk '{print substr($0, length($0), 1)}')
-      vpn_server_to_ipset "$server"
+  log_info "Checking PREROUTING & POSTROUTING iptables rules..."
+  for vpns_iface in tun21 tun22 wgs1; do
+    fw_rule="$(iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $7}')"
+    if [ -n "$fw_rule" ]; then
+      vpns_to_ipset "$vpns_iface"
     fi
   done
 
-  log_info "Checking PREROUTING iptables rules..."
   # Extract the last field (fwmark) from the iptables rule that matches the IP set name.
   fwmarks=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{print $NF}')
 
@@ -277,7 +269,7 @@ delete_Ipset_list() { # TODO: Refactor this function
     # Delete the fwmark priority if no IPSET lists are using it
     for fwmark in $fwmarks; do
       if ! iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$fwmark" >/dev/null; then
-        ip rule del fwmark "$fwmark" 2>/dev/null && log_info "Deleted fwmark $fwmark"
+        ip rule del fwmark "$fwmark" 2>/dev/null && log_info "Deleted ip rule for fwmark $fwmark"
       fi
     done
   fi
@@ -285,9 +277,9 @@ delete_Ipset_list() { # TODO: Refactor this function
   log_info "Checking if IPSET list $IPSET_NAME exists..."
   if [ "$(ipset list -n "$IPSET_NAME" 2>/dev/null)" = "$IPSET_NAME" ]; then
     if ipset destroy "$IPSET_NAME"; then
-      log_info "IPSET $IPSET_NAME deleted!"
+      log_info "Deleted IPSET $IPSET_NAME"
     else
-      exit_error "attempting to delete IPSET $IPSET_NAME!"
+      exit_error "Can't delete IPSET $IPSET_NAME"
     fi
   fi
 
@@ -304,68 +296,39 @@ delete_Ipset_list() { # TODO: Refactor this function
         read -r "OPTION"
         OPTION=${OPTION:-$default}
         case "$OPTION" in
-          [yY][eE][sS] | [yY]) rm "$DIR/$IPSET_NAME" && log_info "File '$DIR/$IPSET_NAME' deleted." && break ;;
+          [yY][eE][sS] | [yY]) rm "$DIR/$IPSET_NAME" && log_info "Deleted file '$DIR/$IPSET_NAME'" && break ;;
           [nN][oO] | [nN]) break ;;
           *) echo "Invalid option. File not deleted." ;;
         esac
       done
     elif [ "$DEL_FLAG" = "FORCE" ]; then
-      rm "$DIR/$IPSET_NAME" && log_info "File '$DIR/$IPSET_NAME' deleted."
+      rm "$DIR/$IPSET_NAME" && log_info "Deleted file '$DIR/$IPSET_NAME'"
     fi
   fi
 }
 
-define_iface() {
-  ### Define interface/bitmask to route traffic to. Use existing PREROUTING rule for IPSET to determine FWMARK.
-  TAG_MARK=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{print $(NF)}' | head -n 1)
-  [ -z "$TAG_MARK" ] && exit_error "Mandatory PREROUTING rule for IPSET name $IPSET_NAME does not exist."
-  fwmark_substr=$(echo "$TAG_MARK" | cut -c 3-6)
+server_param() {
+  vpns_id=$(get_param "server" "$@")
+  echo "1 2 3 all" | grep -qw "$vpns_id" || exit_error \
+    "Invalid server '$vpns_id' specified. Should be 1 or 2 for OpenVPN, 3 for WireGuard or 'all'."
 
-  case "$fwmark_substr" in
-    8000) IFACE="br0" ;;
-    a000) IFACE="wgc1" ;;
-    b000) IFACE="wgc2" ;;
-    c000) IFACE="wgc3" ;;
-    d000) IFACE="wgc4" ;;
-    e000) IFACE="wgc5" ;;
-    1000) IFACE="tun11" ;;
-    2000) IFACE="tun12" ;;
-    4000) IFACE="tun13" ;;
-    7000) IFACE="tun14" ;;
-    3000) IFACE="tun15" ;;
-    *) exit_error "$1 should be 1-5 for WireGuard Client or 11-15 for OpenVPN Client" ;;
-  esac
-}
+  parse_proto "$@" # Set PROTO_RULE & PROTO_PARAM
 
-server_param() { # TODO: Refactor this function (Special processing for VPN Server)
-  server=$(get_param "server" "$@")
-  case "$server" in
-    1 | 2 | 3 | all) ;;
-    *) exit_error "Invalid Server '$server' specified." ;;
-  esac
-
-  parse_protocol_and_ports "$@" # Sets PROTOCOL_PORT_RULE & PROTOCOL_PORT_PARAMS
-
-  ### Process server when 'client=' specified
   if [ "$(echo "$@" | grep -c 'client=')" -gt 0 ]; then
-    VPN_CLIENT_INSTANCE=$(get_param "client" "$@")
-    case "$VPN_CLIENT_INSTANCE" in
-      [1-5]) IFACE="wgc${VPN_CLIENT_INSTANCE}" ;;
-      1[1-5]) IFACE="tun${VPN_CLIENT_INSTANCE}" ;;
-      *) exit_error "'client=$VPN_CLIENT_INSTANCE' must be 1-5 for WireGuard client or 11-15 for OpenVPN client." ;;
-    esac
+    client=$(get_param "client" "$@")
+    echo "11 12 13 14 15" | grep -qw "$client" || exit_error \
+      "Invalid client '$client' specified. Should be 11-15 for OpenVPN client."
 
-    if [ "$server" = "all" ]; then
-      for server in 1 2 3; do
-        VPN_Server_to_VPN_Client "$server"
+    if [ "$vpns_id" = "all" ]; then
+      for vpns_id in 1 2 3; do
+        vpns_to_vpnc "$vpns_id" "$client"
       done
     else
-      VPN_Server_to_VPN_Client "$server"
+      vpns_to_vpnc "$vpns_id" "$client"
     fi
     exit_routine
   fi
 
-  #### Process server when 'ipset_name=' specified
   if [ "$(echo "$@" | grep -c 'ipset_name=')" -ge 1 ]; then
     IPSET_NAME=$(get_param "ipset_name" "$@" | tr ',' ' ')
 
@@ -376,18 +339,16 @@ server_param() { # TODO: Refactor this function (Special processing for VPN Serv
         fi
       fi
 
-      define_iface "$IPSET_NAME"
-
-      if [ "$server" = "all" ]; then
-        for server in 1 2 3; do
-          vpn_server_to_ipset "$server"
+      if [ "$vpns_id" = "all" ]; then
+        for vpns_id in 1 2 3; do
+          vpns_to_ipset "$vpns_id"
         done
       else
-        vpn_server_to_ipset "$server"
+        vpns_to_ipset "$vpns_id"
       fi
     done
 
-    script_entry="sh $SCR_DIR/$SCR_NAME.sh $1 $2 $PROTOCOL_PORT_PARAMS"
+    script_entry="sh $SCR_DIR/$SCR_NAME.sh $1 $2 $PROTO_PARAM"
     if [ -z "$DEL_FLAG" ]; then
       add_entry_to_file "$NAT_START" "$script_entry"
     else
@@ -397,129 +358,131 @@ server_param() { # TODO: Refactor this function (Special processing for VPN Serv
   fi
 }
 
-VPN_Server_to_VPN_Client() { # TODO: Refactor this function (Work only with OpenVPN?)
-  vpn_server_instance=$1
-  script_entry="sh $SCRIPT_DIR/$SCR_NAME.sh server=$vpn_server_instance client=$VPN_CLIENT_INSTANCE"
-  vpn_server_subnet="$(nvram get vpn_server"${vpn_server_instance}"_sn)/24"
-  IPT_DEL_ENTRY="iptables -t nat -D POSTROUTING -s \"\$(nvram get vpn_server${vpn_server_instance}_sn)\"/24 -o $IFACE $PROTOCOL_PORT_PARAMS -j MASQUERADE 2>/dev/null"
-  IPT_ADD_ENTRY="iptables -t nat -A POSTROUTING -s \"\$(nvram get vpn_server${vpn_server_instance}_sn)\"/24 -o $IFACE $PROTOCOL_PORT_PARAMS -j MASQUERADE"
-  POLICY_RULE_WITHOUT_NAME="${vpn_server_subnet}>>VPN"
-  POLICY_RULE="<VPN Server ${vpn_server_instance}>${vpn_server_subnet}>>VPN"
+vpns_to_vpnc() { # TODO: Add WG support
+  vpns_id=$1
+  vpnc_id=$2
 
-  VPN_IP_LIST="$(nvram get vpn_client"$VPN_CLIENT_INSTANCE"_clientlist)"
-  for n in $VPN_IDS; do
-    VPN_IP_LIST="${VPN_IP_LIST}$(nvram get vpn_client"$VPN_CLIENT_INSTANCE"_clientlist"${n}")"
+  vpns_sub="$(nvram get vpn_server"${vpns_id}"_sn)/24"
+  policy_rule="<VPN Server ${vpns_id}>${vpns_sub}>>VPN"
+
+  vpnc_iface="tun${vpnc_id}"
+  vpnc_ip_list="$(nvram get vpn_client"${vpnc_id#1}"_clientlist)"
+
+  for n in 1 2 3 4 5; do
+    vpnc_ip_list="${vpnc_ip_list}$(nvram get vpn_client"$vpnc_id"_clientlist"${n}")"
   done
 
   if [ -z "$DEL_FLAG" ]; then # add entry if DEL_FLAG is null
-    eval "$IPT_DEL_ENTRY"
-    eval "$IPT_ADD_ENTRY"
-
-    iptables -t nat -D POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" $PROTOCOL_PORT_PARAMS -j MASQUERADE 2>/dev/null
-    iptables -t nat -A POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" $PROTOCOL_PORT_PARAMS -j MASQUERADE
-
-    add_entry_to_file "$NAT_START" "$script_entry"
+    ipt nat POSTROUTING "-s $vpns_sub -o $vpnc_iface $PROTO_PARAM -j MASQUERADE"
+    add_entry_to_file "$NAT_START" "sh $SCRIPT_DIR/$SCR_NAME.sh server=$vpns_id client=$vpnc_id"
 
     # Add nvram entry to vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist
-    if [ "$(echo "$VPN_IP_LIST" | grep -c "$POLICY_RULE_WITHOUT_NAME")" -eq 0 ]; then
-      VPN_IP_LIST="${VPN_IP_LIST}${POLICY_RULE}"
+    if [ "$(echo "$vpnc_ip_list" | grep -c "${vpns_sub}>>VPN")" -eq 0 ]; then
+      vpnc_ip_list="${vpnc_ip_list}${policy_rule}"
       if [ "$(uname -m)" = "aarch64" ]; then
         low=0
         max=255
         for n in "" $VPN_IDS; do
-          nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist"${n}"="$(echo "$VPN_IP_LIST" | cut -b $low-$max)"
+          nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist"${n}"="$(echo "$vpnc_ip_list" | cut -b $low-$max)"
           low=$((max + 1))
           max=$((low + 254))
         done
       else
-        nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$VPN_IP_LIST"
+        nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$vpnc_ip_list"
       fi
       nvram commit
-      logger -st "($(basename "$0"))" $$ "Restarting VPN Client ${VPN_CLIENT_INSTANCE} to add policy rule for VPN Server ${vpn_server_instance}"
+      logger -st "($(basename "$0"))" $$ "Restarting VPN Client ${VPN_CLIENT_INSTANCE} to add policy rule for VPN Server ${vpns_id}"
       service restart_vpnclient"${VPN_CLIENT_INSTANCE}"
     else # if the VPN Server entry exists in nvram using the 'vpnserverX' name created by the prior version, convert it to the new name
-      if [ "$(echo "$VPN_IP_LIST" | grep -c "vpnserver${vpn_server_instance}")" -ge 1 ]; then
-        VPN_IP_LIST="$(echo "$VPN_IP_LIST" | sed "s/<vpnserver${vpn_server_instance}>/<VPN Server ${vpn_server_instance}>/")"
+      if [ "$(echo "$vpnc_ip_list" | grep -c "vpnserver${vpns_id}")" -ge 1 ]; then
+        vpnc_ip_list="$(echo "$vpnc_ip_list" | sed "s/<vpnserver${vpns_id}>/<VPN Server ${vpns_id}>/")"
         if [ "$(uname -m)" = "aarch64" ]; then
           low=0
           max=255
           for n in "" $VPN_IDS; do
-            nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist"${n}"="$(echo "$VPN_IP_LIST" | cut -b $low-$max)"
+            nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist"${n}"="$(echo "$vpnc_ip_list" | cut -b $low-$max)"
             low=$((max + 1))
             max=$((low + 254))
           done
         else
-          nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$VPN_IP_LIST"
+          nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$vpnc_ip_list"
         fi
         nvram commit
-        logger -st "($(basename "$0"))" $$ "Restarting vpnclient ${VPN_CLIENT_INSTANCE} for policy rule for VPN Server ${vpn_server_instance} to take effect"
+        logger -st "($(basename "$0"))" $$ "Restarting vpnclient ${VPN_CLIENT_INSTANCE} for policy rule for VPN Server ${vpns_id} to take effect"
         service restart_vpnclient"${VPN_CLIENT_INSTANCE}"
       fi
     fi
-  else # 'del' or 'del=force' parameter passed. Delete routing and routing rules in vpn server up down scripts.
-    iptables -t nat -D POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
+  else # 'del' or 'del=force' parameter passed.
+    iptables -t nat -D POSTROUTING -s "$vpns_sub" -o "$vpnc_iface" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
 
-    # nat-start File
-    if [ -s "$NAT_START" ]; then
-      sed "/server=$vpn_server_instance client=$VPN_CLIENT_INSTANCE/d" "$NAT_START" >"$NAT_START.tmp" && mv "$NAT_START.tmp" "$NAT_START"
-      logger -t "($(basename "$0"))" $$ "$script_entry entry deleted from $NAT_START"
-      check_if_empty "$NAT_START"
-    fi
+    delete_entry_from_file $NAT_START "server=$vpns_id client=$VPN_CLIENT_INSTANCE"
 
     # nvram get vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist
-    if [ "$(echo "$VPN_IP_LIST" | grep -c "$POLICY_RULE")" -eq "1" ]; then
-      VPN_IP_LIST="$(echo "$VPN_IP_LIST" | sed "s,<VPN Server ${vpn_server_instance}>${vpn_server_subnet}>>VPN,,")"
+    if [ "$(echo "$vpnc_ip_list" | grep -c "$policy_rule")" -eq "1" ]; then
+      vpnc_ip_list="$(echo "$vpnc_ip_list" | sed "s,<VPN Server ${vpns_id}>${vpns_sub}>>VPN,,")"
       if [ "$(uname -m)" = "aarch64" ]; then
         low=0
         max=255
         for n in "" $VPN_IDS; do
-          nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist"${n}"="$(echo "$VPN_IP_LIST" | cut -b $low-$max)"
+          nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist"${n}"="$(echo "$vpnc_ip_list" | cut -b $low-$max)"
           low=$((max + 1))
           max=$((low + 254))
         done
       else
-        nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$VPN_IP_LIST"
+        nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$vpnc_ip_list"
       fi
       nvram commit
-      logger -st "($(basename "$0"))" $$ "Restarting vpnclient ${VPN_CLIENT_INSTANCE} to remove policy rule for VPN Server ${vpn_server_instance}"
+      logger -st "($(basename "$0"))" $$ "Restarting vpnclient ${VPN_CLIENT_INSTANCE} to remove policy rule for VPN Server ${vpns_id}"
       service restart_vpnclient"${VPN_CLIENT_INSTANCE}"
     fi
   fi
-
-  [ -s "$NAT_START" ] && chmod 755 "$NAT_START" # set permissions for each file
 }
 
-vpn_server_to_ipset() { # TODO: Refactor this function
-  vpn_server_instance=$1
+vpns_to_ipset() {
+  case "$1" in
+    1 | tun21)
+      vpns_iface="tun21"
+      vpns_sub="$(nvram get vpn_server1_sn)/24" # Get VPN Server IP
+      ;;
+    2 | tun22)
+      vpns_iface="tun22"
+      vpns_sub="$(nvram get vpn_server2_sn)/24"
+      ;;
+    3 | wgs1)
+      vpns_iface="wgs1"
+      vpns_sub="$(nvram get wgs_addr)" # Already includes the subnet mask
+      ;;
+  esac
 
-  case "$vpn_server_instance" in
-    1)
-      vpn_server_tun="tun21"
-      vpn_server_subnet="$(nvram get vpn_server1_sn)/24" # Get VPN Server IP
-      ;;
-    2)
-      vpn_server_tun="tun22"
-      vpn_server_subnet="$(nvram get vpn_server2_sn)/24"
-      ;;
-    3)
-      vpn_server_tun="wgs1"
-      vpn_server_subnet="$(nvram get wgs_addr)" # Already includes the subnet mask
-      ;;
-    *) exit_error "VPN Server instance $vpn_server_instance should be a 1, 2 for OpenVPN or 3 for WireGuard" ;;
+  ### Define interface/bitmask to route traffic to. Use existing PREROUTING rule for IPSET to determine FWMARK.
+  fwmark=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{print $(NF)}' | head -n 1)
+  [ -z "$fwmark" ] && exit_error "Mandatory PREROUTING rule for IPSET name $IPSET_NAME does not exist."
+  mark=$(echo "$fwmark" | cut -c 3-6)
+
+  case "$mark" in
+    a000) vpnc_iface="wgc1" ;;
+    b000) vpnc_iface="wgc2" ;;
+    c000) vpnc_iface="wgc3" ;;
+    d000) vpnc_iface="wgc4" ;;
+    e000) vpnc_iface="wgc5" ;;
+    1000) vpnc_iface="tun11" ;;
+    2000) vpnc_iface="tun12" ;;
+    4000) vpnc_iface="tun13" ;;
+    7000) vpnc_iface="tun14" ;;
+    3000) vpnc_iface="tun15" ;;
+    *) exit_error "$1 should be 1-5 for WireGuard Client or 11-15 for OpenVPN Client" ;;
   esac
 
   if [ -z "$DEL_FLAG" ]; then
-    iptables -t nat -D POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" "$PROTOCOL_PORT_RULE" -j MASQUERADE 2>/dev/null
-    iptables -t nat -A POSTROUTING -s "$vpn_server_subnet" -o "$IFACE" $PROTOCOL_PORT_RULE -j MASQUERADE
-    iptables -t mangle -D PREROUTING -i $vpn_server_tun -m set --match-set "$IPSET_NAME" dst $PROTOCOL_PORT_RULE -j MARK --set-mark "$TAG_MARK" 2>/dev/null
-    iptables -t mangle -A PREROUTING -i $vpn_server_tun -m set --match-set "$IPSET_NAME" dst $PROTOCOL_PORT_RULE -j MARK --set-mark "$TAG_MARK"
-  else # 'del' or 'del=force' option specified.
-    iptables -nvL PREROUTING -t mangle --line | grep $vpn_server_tun | grep "$IPSET_NAME" | grep "match-set" | awk '{print $1}' | sort -nr | while read -r chain_num; do
-      iptables -t mangle -D PREROUTING "$chain_num" && log_info "Deleted PREROUTING Chain $chain_num for IPSET List $IPSET_NAME on $vpn_server_tun"
+    ipt nat POSTROUTING "-s $vpns_sub -o $vpnc_iface $PROTO_RULE -j MASQUERADE"
+    ipt mangle PREROUTING "-i $vpns_iface -m set --match-set $IPSET_NAME dst $PROTO_RULE -j MARK --set-mark $fwmark"
+  else # 'del' or 'del=force' option specified
+    iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $1}' | sort -nr | while read -r chain_num; do
+      iptables -t mangle -D PREROUTING "$chain_num" && log_info "Deleted PREROUTING Chain $chain_num for IPSET List $IPSET_NAME on $vpns_iface"
     done
 
-    iptables -nvL POSTROUTING -t nat --line | grep "${vpn_server_subnet%%/*}" | grep "$IFACE" | awk '{print $1}' | sort -nr | while read -r chain_num; do
-      iptables -t nat -D POSTROUTING "$chain_num" && log_info "Deleted POSTROUTING Chain $chain_num for IPSET List $IPSET_NAME on $IFACE"
+    iptables -nvL POSTROUTING -t nat --line | grep "${vpns_sub%%/*}" | grep "$vpnc_iface" | awk '{print $1}' | sort -nr | while read -r chain_num; do
+      iptables -t nat -D POSTROUTING "$chain_num" && log_info "Deleted POSTROUTING Chain $chain_num for IPSET List $IPSET_NAME on $vpnc_iface"
     done
   fi
 }
@@ -557,7 +520,7 @@ update_dnsmasq_conf() {
   domains="$1"
 
   [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*$IPSET_NAME|d" "$DNSMASQ_CONF"
-  echo "ipset=/$domains/$IPSET_NAME" >>"$DNSMASQ_CONF" && log_info "Added $domains to $DNSMASQ_CONF"
+  echo "ipset=/$domains/$IPSET_NAME" >>"$DNSMASQ_CONF" && log_info "Add '$domains' to $DNSMASQ_CONF"
   service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
 }
 
@@ -589,7 +552,9 @@ fetch_asn_to_ipset() {
 
   log_info "Fetching data from: $url"
   curl --retry 3 --connect-timeout 3 -sfL -o "$file" "$url" || exit_error "Fetching failed."
-  tr -d "\\" <"$file" | grep -oE "$CIDR_REGEX" | sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME" && rm -f $file
+  tr -d "\\" <"$file" |
+    grep -oE "$CIDR_REGEX" |
+    sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME" && rm -f "$file"
 }
 
 aws_param() {
@@ -642,12 +607,9 @@ ip_param() {
   done | sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME"
 }
 
-parse_protocol_and_ports() { # TODO: Refactor this function (protocols="tcp:80,443 udp:53 icmp")
+parse_proto() { # TODO: Refactor to work like this: proto="tcp:80,443 udp:53 icmp"
   protocol=$(get_param "protocol" "$*" | awk '{print tolower($0)}')
   ports=$(get_param "ports" "$*")
-
-  PROTOCOL_PORT_RULE=""
-  PROTOCOL_PORT_PARAMS=""
 
   if [ -n "$protocol" ]; then
     protocols=$(awk '{print tolower($1)}' /etc/protocols | grep -v '^#' | tr '\n' ' ')
@@ -670,11 +632,11 @@ parse_protocol_and_ports() { # TODO: Refactor this function (protocols="tcp:80,4
     fi
 
     if [ -n "$protocol" ] && [ -n "$ports" ]; then
-      PROTOCOL_PORT_RULE="-p $protocol -m multiport --dports $ports"
-      PROTOCOL_PORT_PARAMS="protocol=$protocol ports=$ports"
+      PROTO_RULE="-p $protocol -m multiport --dports $ports"
+      PROTO_PARAM="protocol=$protocol ports=$ports"
     elif [ -n "$protocol" ] && [ -z "$ports" ]; then
-      PROTOCOL_PORT_RULE="-p $protocol"
-      PROTOCOL_PORT_PARAMS="protocol=$protocol"
+      PROTO_RULE="-p $protocol"
+      PROTO_PARAM="protocol=$protocol"
     fi
   fi
 }
@@ -705,11 +667,11 @@ parse_src_option() {
   fi
 }
 
-check_files_for_entries() {
+check_files_entry() {
   script_entry="sh $SCR_DIR/$SCR_NAME.sh"
 
   if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME $SRC_PARAMS $PROTOCOL_PORT_PARAMS"
+    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME $SRC_PARAMS $PROTO_PARAM"
   else
     script_entry="$script_entry ipset_name=$IPSET_NAME"
   fi
@@ -719,7 +681,7 @@ check_files_for_entries() {
   add_entry_to_file "$NAT_START" "$script_entry"
 }
 
-set_routing_tags() {
+conf_route_tags() {
   case "$DST_IFACE" in
     0)
       TAG_MARK="0x8000/0xf000"
@@ -782,14 +744,7 @@ set_routing_tags() {
   esac
 }
 
-set_fwmark_ip_rule() {
-  if ! ip rule | grep -q "$TAG_MARK"; then
-    ip rule add from 0/0 fwmark "$TAG_MARK" table "$ROUTE_TABLE" prio "$priority" && log_info "Created fwmark $TAG_MARK"
-    ip route flush cache
-  fi
-}
-
-set_wg_rp_filter() {
+set_wg_rpfilter() {
   if [ "${ROUTE_TABLE#wgc}" != "$ROUTE_TABLE" ]; then # Check if $ROUTE_TABLE starts with 'wgc'
     # Here we set the reverse path filtering mode for the interface 'wgc*'.
     # This setting is only necessary for WireGuard. OpenVPN on Asuswrt-Merlin defaults to '0'.
@@ -810,10 +765,11 @@ set_wg_rp_filter() {
   fi
 }
 
-setup_ipset_list() {
+set_ipset() {
   if ! ipset list -n "$IPSET_NAME" >/dev/null 2>&1; then
     ipset create "$IPSET_NAME" hash:net family inet hashsize 1024 maxelem 65536 && touch "$DIR/$IPSET_NAME"
-    log_info "Created IPSET: $IPSET_NAME and file: $DIR/$IPSET_NAME"
+    log_info "Created IPSET: $IPSET_NAME"
+    log_info "Created bak file for IPSET: $DIR/$IPSET_NAME"
   fi
 
   if [ -s "$DIR/$IPSET_NAME" ]; then
@@ -827,11 +783,22 @@ setup_ipset_list() {
   fi
 }
 
-create_routing_rules() {
-  iptables -t mangle -D PREROUTING -i br0 $SRC_RULE -m set --match-set "$IPSET_NAME" dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK 2>/dev/null
-  log_info "Selective routing rule via $ROUTE_TABLE deleted for $IPSET_NAME fwmark $TAG_MARK"
-  iptables -t mangle -A PREROUTING -i br0 $SRC_RULE -m set --match-set "$IPSET_NAME" dst $PROTOCOL_PORT_RULE -j MARK --set-mark $TAG_MARK
-  log_info "Selective routing rule via $ROUTE_TABLE created for $IPSET_NAME fwmark $TAG_MARK"
+set_iprule_ipt() {
+  if ! ip rule | grep -q "$TAG_MARK"; then
+    ip rule add from 0/0 fwmark "$TAG_MARK" table "$ROUTE_TABLE" prio "$priority" && ip route flush cache
+    log_info "Created ip rule for table $ROUTE_TABLE with fwmark $TAG_MARK"
+  fi
+  ipt mangle PREROUTING "-i br0 $SRC_RULE -m set --match-set $IPSET_NAME dst $PROTO_RULE -j MARK --set-mark $TAG_MARK"
+}
+
+ipt() {
+  table=$1
+  chain=$2
+  rule=$3
+
+  eval "iptables -t $table -D $chain $rule" 2>/dev/null
+  eval "iptables -t $table -A $chain $rule"
+  log_info "Set iptables -t $table -A $chain $rule"
 }
 
 if [ "$1" = "help" ] || [ "$1" = "-h" ]; then
@@ -897,9 +864,9 @@ else
 fi
 
 case "$@" in
+  *server=*) server_param "$@" ;;
   *del=force*) DEL_FLAG="FORCE" && delete_Ipset_list && exit_routine ;;
   *del*) DEL_FLAG="del" && delete_Ipset_list && exit_routine ;;
-  *server=*) server_param "$@" ;;
   *dnsmasq=* | *dnsmasq_file=*) dnsmasq_param "$@" ;;
   *autoscan=*) harvest_dnsmasq_queries "$@" ;;
   *asnum=*) asnum_param "$@" ;;
@@ -909,17 +876,16 @@ case "$@" in
 esac
 
 if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-  parse_protocol_and_ports "$@" # Sets PROTOCOL_PORT_RULE & PROTOCOL_PORT_PARAMS
-  parse_src_option "$@"         # Sets SRC_RULE & SRC_PARAMS
-  check_files_for_entries "$@"
-  set_routing_tags
-  set_fwmark_ip_rule
-  set_wg_rp_filter
-  setup_ipset_list
-  create_routing_rules
+  parse_proto "$@"      # Set PROTO_RULE & PROTO_PARAM
+  parse_src_option "$@" # Set SRC_RULE & SRC_PARAMS
+  check_files_entry "$@"
+  conf_route_tags
+  set_wg_rpfilter
+  set_ipset
+  set_iprule_ipt
 elif echo "$1" | grep -Eq '^ipset_name='; then
-  check_files_for_entries "$@"
-  setup_ipset_list
+  check_files_entry "$@"
+  set_ipset
 fi
 
 exit_routine
