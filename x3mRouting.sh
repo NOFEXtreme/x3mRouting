@@ -47,6 +47,7 @@
 #            ['dnsmasq='domain[,domain]...] # dnsmasq method
 #            ['dnsmasq_file='/path/to/file] # dnsmasq method
 #            ['ip='ip[,ip][,cidr]...] # Equivalent to manual method
+#            ['ip_file='/path/to/file] # Same as 'ip='
 #            ['src='src_ip]
 #            ['src_range='from_ip-to_ip]
 #            ['dir='save_restore_location] # if 'dir' not specified, defaults to /opt/tmp
@@ -66,7 +67,8 @@
 #            ['aws_region='US[,EU]...]  # Amazon method
 #            ['dnsmasq='domain[,domain]...] # dnsmasq method
 #            ['dnsmasq_file='/path/to/file] # dnsmasq method
-#            ['ip='ip[,ip][,cidr]...] # Equivalent to manual method
+#            ['ip='ip[,ip][,cidr]...] # Equivalent to manual method (can be used to add entry to existing IPSET list)
+#            ['ip_file='/path/to/file] # Same as 'ip='
 #            ['dir='save_restore_location] # if 'dir' not specified, defaults to /opt/tmp
 #            ['del'] # Delete IPSET list and all configuration settings.
 #                    # **Will prompt** for permission to delete any files if only a shebang exists
@@ -241,7 +243,7 @@ check_if_empty() {
   fi
 }
 
-delete_Ipset_list() { # TODO: Simplify logic
+delete_ipset_list() { # TODO: Simplify logic
   log_info "Checking files for entry..."
   for file in "$NAT_START" "$WG_START" "$WAN_EVENT" "$DNSMASQ_CONF" "$DIR/$IPSET_NAME"; do
     delete_entry_from_file "$file" "$IPSET_NAME"
@@ -326,7 +328,6 @@ server_param() {
     else
       vpns_to_vpnc "$vpns_id" "$client"
     fi
-    exit_routine
   fi
 
   if [ "$(echo "$@" | grep -c 'ipset_name=')" -ge 1 ]; then
@@ -354,7 +355,6 @@ server_param() {
     else
       delete_entry_from_file "$NAT_START" "$1 $2"
     fi
-    exit_routine
   fi
 }
 
@@ -492,7 +492,7 @@ dnsmasq_param() {
   domains=$(get_param "dnsmasq" "$@" | tr ',' '/' | sed 's|/$||')
 
   [ -z "$domains" ] && [ -s "$dnsmasq_file" ] && domains=$(tr '\n' '/' <"$dnsmasq_file" | sed 's|/$||')
-  [ -z "$domains" ] && exit_error "No DNSMASQ parameter specified."
+  [ -z "$domains" ] && exit_error "'dnsmasq' parameter cannot be empty."
 
   update_dnsmasq_conf "$domains"
 }
@@ -599,12 +599,16 @@ fetch_aws_to_ipset() {
 }
 
 ip_param() {
+  ip_file=$(get_param "ip_file" "$@")
   ips=$(get_param "ip" "$@" | tr ',' ' ')
+
+  [ -z "$ips" ] && [ -s "$ip_file" ] && ips=$(tr '\n' ' ' <"$ip_file")
   [ -z "$ips" ] && exit_error "'ip' parameter cannot be empty."
 
-  [ -n "$ips" ] && for ip in $ips; do
+  for ip in $ips; do
     echo "$ip" | grep -oE "$IP_RE(/$IP_RE_PREFIX)?" || log_warning "$ip is an invalid IP or CIDR. Skipping entry." >&2
-  done | sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME"
+  done >>"$DIR/$IPSET_NAME"
+  sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n "$DIR/$IPSET_NAME" -o "$DIR/$IPSET_NAME"
 }
 
 parse_proto() { # TODO: Refactor to work like this: proto="tcp:80,443 udp:53 icmp"
@@ -816,6 +820,11 @@ DIR=$(case "$@" in
   *) echo "/opt/tmp" ;;
 esac)
 
+DEL_FLAG=$(case "$@" in
+  *del=force*) echo "FORCE" ;;
+  *del*) echo "del" ;;
+esac)
+
 # Set SRC_IFACE and DST_IFACE unless 'server=' or 'ipset_name=' are used
 if echo "$1" | grep -q '^server='; then # TODO: Simplify logic
   if ! echo "$2" | grep -Eq '^(client=|ipset_name=)'; then
@@ -864,14 +873,13 @@ else
 fi
 
 case "$@" in
-  *server=*) server_param "$@" ;;
-  *del=force*) DEL_FLAG="FORCE" && delete_Ipset_list && exit_routine ;;
-  *del*) DEL_FLAG="del" && delete_Ipset_list && exit_routine ;;
+  *server=*) server_param "$@" && exit_routine ;;
+  *del*) delete_ipset_list && exit_routine ;;
   *dnsmasq=* | *dnsmasq_file=*) dnsmasq_param "$@" ;;
   *autoscan=*) harvest_dnsmasq_queries "$@" ;;
   *asnum=*) asnum_param "$@" ;;
   *aws_region=*) aws_param "$@" ;;
-  *ip=*) ip_param "$@" ;;
+  *ip=* | *ip_file=*) ip_param "$@" ;;
   *) ;;
 esac
 
