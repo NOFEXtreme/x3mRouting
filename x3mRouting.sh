@@ -9,7 +9,7 @@
 # Integrated WireGuard client/server and protocol/ports support.
 # Currently not working with WireGuard:
 #  - VPN Server to VPN Client Routing
-# Last updated: 20-Oct-2024
+# Last updated: 22-Oct-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -243,72 +243,6 @@ check_if_empty() {
   fi
 }
 
-delete_ipset_list() { # TODO: Simplify logic
-  log_info "Checking files for entry..."
-  for file in "$NAT_START" "$WG_START" "$WAN_EVENT" "$DNSMASQ_CONF" "$DIR/$IPSET_NAME"; do
-    delete_entry_from_file "$file" "$IPSET_NAME"
-  done
-
-  log_info "Checking PREROUTING & POSTROUTING iptables rules..."
-  for vpns_iface in tun21 tun22 wgs1; do
-    fw_rule="$(iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $7}')"
-    if [ -n "$fw_rule" ]; then
-      vpns_to_ipset "$vpns_iface"
-    fi
-  done
-
-  # Extract the last field (fwmark) from the iptables rule that matches the IP set name.
-  fwmarks=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{print $NF}')
-
-  if [ -n "$fwmarks" ]; then
-    iptables -nvL PREROUTING -t mangle --line |
-      grep "br0" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $1, $12}' | sort -nr |
-      while read -r chain_num ipset_name; do
-        iptables -t mangle -D PREROUTING "$chain_num" # Delete PREROUTING Rules for Normal IPSET routing
-        log_info "Deleted PREROUTING Chain $chain_num for IPSET List $ipset_name"
-      done
-
-    # Delete the fwmark priority if no IPSET lists are using it
-    for fwmark in $fwmarks; do
-      if ! iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$fwmark" >/dev/null; then
-        ip rule del fwmark "$fwmark" 2>/dev/null && log_info "Deleted ip rule for fwmark $fwmark"
-      fi
-    done
-  fi
-
-  log_info "Checking if IPSET list $IPSET_NAME exists..."
-  if [ "$(ipset list -n "$IPSET_NAME" 2>/dev/null)" = "$IPSET_NAME" ]; then
-    if ipset destroy "$IPSET_NAME"; then
-      log_info "Deleted IPSET $IPSET_NAME"
-    else
-      exit_error "Can't delete IPSET $IPSET_NAME"
-    fi
-  fi
-
-  log_info "Checking if IPSET backup file exists..."
-  if [ -f "$DIR/$IPSET_NAME" ]; then
-    non_empty_lines=$(grep -cvE '^\s*$' "$DIR/$IPSET_NAME")
-    if [ "$DEL_FLAG" = "del" ]; then
-      while true; do
-        if [ "$non_empty_lines" -eq 0 ]; then
-          printf "NOTICE! The backup '%s' is empty. Delete it? [Y/n]:" "$DIR/$IPSET_NAME" && default="y"
-        else
-          printf "WARNING! The backup '%s' is NOT empty. Delete it? [y/N]:" "$DIR/$IPSET_NAME" && default="n"
-        fi
-        read -r "OPTION"
-        OPTION=${OPTION:-$default}
-        case "$OPTION" in
-          [yY][eE][sS] | [yY]) rm "$DIR/$IPSET_NAME" && log_info "Deleted file '$DIR/$IPSET_NAME'" && break ;;
-          [nN][oO] | [nN]) break ;;
-          *) echo "Invalid option. File not deleted." ;;
-        esac
-      done
-    elif [ "$DEL_FLAG" = "FORCE" ]; then
-      rm "$DIR/$IPSET_NAME" && log_info "Deleted file '$DIR/$IPSET_NAME'"
-    fi
-  fi
-}
-
 server_param() {
   vpns_id=$(get_param "server" "$@")
   echo "1 2 3 all" | grep -qw "$vpns_id" || exit_error \
@@ -372,7 +306,7 @@ vpns_to_vpnc() { # TODO: Add WG support
     vpnc_ip_list="${vpnc_ip_list}$(nvram get vpn_client"$vpnc_id"_clientlist"${n}")"
   done
 
-  if [ -z "$DEL_FLAG" ]; then # add entry if DEL_FLAG is null
+  if [ -z "$DEL_FLAG" ]; then # Add entry if DEL_FLAG is null
     ipt nat POSTROUTING "-s $vpns_sub -o $vpnc_iface $PROTO_PARAM -j MASQUERADE"
     add_entry_to_file "$NAT_START" "sh $SCRIPT_DIR/$SCR_NAME.sh server=$vpns_id client=$vpnc_id"
 
@@ -454,12 +388,12 @@ vpns_to_ipset() {
       ;;
   esac
 
-  ### Define interface/bitmask to route traffic to. Use existing PREROUTING rule for IPSET to determine FWMARK.
-  fwmark=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{print $(NF)}' | head -n 1)
+  # Extract the last field (fwmark) from the iptables PREROUTING rule that matches the IPSET name.
+  fwmark=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{print $NF}' | head -n 1)
   [ -z "$fwmark" ] && exit_error "Mandatory PREROUTING rule for IPSET name $IPSET_NAME does not exist."
-  mark=$(echo "$fwmark" | cut -c 3-6)
+  mark=$(echo "$fwmark" | cut -c 3-6) # Extract the 4-character mark (bitmask) from the fwmark.
 
-  case "$mark" in
+  case "$mark" in # Define interface based on the extracted mark.
     a000) vpnc_iface="wgc1" ;;
     b000) vpnc_iface="wgc2" ;;
     c000) vpnc_iface="wgc3" ;;
@@ -484,6 +418,70 @@ vpns_to_ipset() {
     iptables -nvL POSTROUTING -t nat --line | grep "${vpns_sub%%/*}" | grep "$vpnc_iface" | awk '{print $1}' | sort -nr | while read -r chain_num; do
       iptables -t nat -D POSTROUTING "$chain_num" && log_info "Deleted POSTROUTING Chain $chain_num for IPSET List $IPSET_NAME on $vpnc_iface"
     done
+  fi
+}
+
+del_ipset_list() { # TODO: Simplify logic
+  log_info "Checking files for entry..."
+  for file in "$NAT_START" "$WG_START" "$WAN_EVENT" "$DNSMASQ_CONF" "$DIR/$IPSET_NAME"; do
+    delete_entry_from_file "$file" "$IPSET_NAME"
+  done
+
+  log_info "Checking PREROUTING & POSTROUTING iptables rules..."
+  for vpns_iface in tun21 tun22 wgs1; do
+    fw_rule="$(iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $7}')"
+    if [ -n "$fw_rule" ]; then
+      vpns_to_ipset "$vpns_iface"
+    fi
+  done
+
+  # Extract the last field (fwmark) from the iptables PREROUTING rule that matches the IPSET name.
+  fwmark=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{print $NF}' | head -n 1)
+
+  if [ -n "$fwmark" ]; then
+    iptables -nvL PREROUTING -t mangle --line |
+      grep "br0" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $1, $12}' | sort -nr |
+      while read -r chain_num ipset_name; do
+        iptables -t mangle -D PREROUTING "$chain_num" # Delete PREROUTING Rules for Normal IPSET routing
+        log_info "Deleted PREROUTING Chain $chain_num for IPSET List $ipset_name"
+      done
+
+    # Delete the fwmark priority if no IPSET lists are using it
+    if ! iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$fwmark" >/dev/null; then
+      ip rule del fwmark "$fwmark" 2>/dev/null && log_info "Deleted ip rule for fwmark $fwmark"
+    fi
+  fi
+
+  log_info "Checking if IPSET list $IPSET_NAME exists..."
+  if [ "$(ipset list -n "$IPSET_NAME" 2>/dev/null)" = "$IPSET_NAME" ]; then
+    if ipset destroy "$IPSET_NAME"; then
+      log_info "Deleted IPSET $IPSET_NAME"
+    else
+      exit_error "Can't delete IPSET $IPSET_NAME"
+    fi
+  fi
+
+  log_info "Checking if IPSET backup file exists..."
+  if [ -f "$DIR/$IPSET_NAME" ]; then
+    non_empty_lines=$(grep -cvE '^\s*$' "$DIR/$IPSET_NAME")
+    if [ "$DEL_FLAG" = "del" ]; then
+      while true; do
+        if [ "$non_empty_lines" -eq 0 ]; then
+          printf "NOTICE! The backup '%s' is empty. Delete it? [Y/n]:" "$DIR/$IPSET_NAME" && default="y"
+        else
+          printf "WARNING! The backup '%s' is NOT empty. Delete it? [y/N]:" "$DIR/$IPSET_NAME" && default="n"
+        fi
+        read -r "OPTION"
+        OPTION=${OPTION:-$default}
+        case "$OPTION" in
+          [yY][eE][sS] | [yY]) rm "$DIR/$IPSET_NAME" && log_info "Deleted file '$DIR/$IPSET_NAME'" && break ;;
+          [nN][oO] | [nN]) break ;;
+          *) echo "Invalid option. File not deleted." ;;
+        esac
+      done
+    elif [ "$DEL_FLAG" = "FORCE" ]; then
+      rm "$DIR/$IPSET_NAME" && log_info "Deleted file '$DIR/$IPSET_NAME'"
+    fi
   fi
 }
 
@@ -649,14 +647,11 @@ parse_src_option() {
   src=$(get_param "src" "$@")
   src_range=$(get_param "src_range" "$@")
 
-  SRC_RULE=""
-  SRC_PARAMS=""
-
   if [ -n "$src" ]; then
     echo "$src" | grep -qE "^$IP_RE$" || exit_error "'src=$src' not a valid IP address."
 
     SRC_RULE="--src $src"
-    SRC_PARAMS="src=$src"
+    SRC_PARAM="src=$src"
   fi
 
   if [ -n "$src_range" ]; then
@@ -667,7 +662,7 @@ parse_src_option() {
     [ "$ip_start" -gt "$ip_end" ] && exit_error "'src_range=$src_range' is not valid, start IP greater than end IP."
 
     SRC_RULE="--src-range $src_range"
-    SRC_PARAMS="src_range=$src_range"
+    SRC_PARAM="src_range=$src_range"
   fi
 }
 
@@ -675,7 +670,7 @@ check_files_entry() {
   script_entry="sh $SCR_DIR/$SCR_NAME.sh"
 
   if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME $SRC_PARAMS $PROTO_PARAM"
+    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME $SRC_PARAM $PROTO_PARAM"
   else
     script_entry="$script_entry ipset_name=$IPSET_NAME"
   fi
@@ -805,6 +800,8 @@ ipt() {
   log_info "Set iptables -t $table -A $chain $rule"
 }
 
+#======================================== End of functions =========================================
+
 if [ "$1" = "help" ] || [ "$1" = "-h" ]; then
   show_help
   exit 0
@@ -814,8 +811,7 @@ check_entware 120 || exit_error "Entware not ready. Unable to access ipset save/
 log_info "Starting Script Execution $*"
 check_lock "$@"
 
-# Check if user specified 'dir=' parameter
-DIR=$(case "$@" in
+DIR=$(case "$@" in                # Check if user specified 'dir=' parameter
   *dir=*) get_param "dir" "$@" ;; # Mount point/directory for backups
   *) echo "/opt/tmp" ;;
 esac)
@@ -825,22 +821,22 @@ DEL_FLAG=$(case "$@" in
   *del*) echo "del" ;;
 esac)
 
-# Set SRC_IFACE and DST_IFACE unless 'server=' or 'ipset_name=' are used
-if echo "$1" | grep -q '^server='; then # TODO: Simplify logic
-  if ! echo "$2" | grep -Eq '^(client=|ipset_name=)'; then
+if [ "${1%%=*}" = "server" ]; then # Process 'server=' parameter
+  if [ "${2%%=*}" != "client" ] && [ "${2%%=*}" != "ipset_name" ]; then
     exit_error "Second parameter must be 'client=' or 'ipset_name='."
-  else
+  fi
+  if [ "${2%%=*}" = "ipset_name" ]; then
     IPSET_NAME=$(get_param "ipset_name" "$@")
     [ -z "$IPSET_NAME" ] && exit_error "'ipset_name' parameter cannot be empty."
   fi
-elif echo "$1" | grep -Eq '^ipset_name='; then
-  if echo "$2" | grep -Eq '^(src=|src_range=)'; then
-    exit_error "'src=' or 'src_range=' cannot be used with 'ipset_name='."
-  else
-    IPSET_NAME=$(get_param "ipset_name" "$@")
-    [ -z "$IPSET_NAME" ] && exit_error "'ipset_name' parameter cannot be empty."
-  fi
-elif echo "$1" | grep -Eq '^[0-5]|1[1-5]$'; then
+  server_param "$@"
+  exit_routine
+fi
+
+if [ "${1%%=*}" = "ipset_name" ]; then # Only create IPSET without routing
+  IPSET_NAME=$(get_param "ipset_name" "$@")
+  [ -z "$IPSET_NAME" ] && exit_error "'ipset_name' parameter cannot be empty."
+elif echo "$1" | grep -Eq '^[0-5]|1[1-5]$'; then # Create IPSET and set SRC_IFACE and DST_IFACE with routing
   SRC_IFACE=$1
   DST_IFACE=$2
   IPSET_NAME=$3
@@ -873,8 +869,7 @@ else
 fi
 
 case "$@" in
-  *server=*) server_param "$@" && exit_routine ;;
-  *del*) delete_ipset_list && exit_routine ;;
+  *del*) del_ipset_list && exit_routine ;;
   *dnsmasq=* | *dnsmasq_file=*) dnsmasq_param "$@" ;;
   *autoscan=*) harvest_dnsmasq_queries "$@" ;;
   *asnum=*) asnum_param "$@" ;;
@@ -885,14 +880,14 @@ esac
 
 if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
   parse_proto "$@"      # Set PROTO_RULE & PROTO_PARAM
-  parse_src_option "$@" # Set SRC_RULE & SRC_PARAMS
-  check_files_entry "$@"
+  parse_src_option "$@" # Set SRC_RULE & SRC_PARAM
+  check_files_entry
   conf_route_tags
   set_wg_rpfilter
   set_ipset
   set_iprule_ipt
-elif echo "$1" | grep -Eq '^ipset_name='; then
-  check_files_entry "$@"
+elif [ "${1%%=*}" = "ipset_name" ]; then
+  check_files_entry
   set_ipset
 fi
 
