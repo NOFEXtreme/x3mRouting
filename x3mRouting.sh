@@ -56,8 +56,8 @@
 #            ['del=force'] # Force delete the IPSET list and all configuration settings if only
 #                          # a shebang exists. **Will not** prompt for permission before deleting a
 #                          # file if only a shebang exists.
-#            ['protocol='protocol] # Set protocol to 'udp', 'tcp' or other supported by the system
-#            ['ports='port[,port]...] # Set the ports destination
+#            ['proto='"protocol[:port][,port] [protocol] ..." # protocol e.g. 'tcp','udp'  port e.g. '80','443'
+#                                                             # Use: proto="tcp:80,443 udp:443 icmp" | proto=tcp:80,443
 #---------------------------------------------------------------------------------------------------
 # Create IPSET List with no Routing Rules:
 #
@@ -82,7 +82,7 @@
 #---------------------------------------------------------------------------------------------------
 # VPN Server to existing LAN routing rules for one or more IPSET lists
 #
-# x3mRouting {'server='1|2|3|all} {'ipset_name='IPSET[,IPSET]...} ['protocol='] ['ports='] ['del'] ['del=force']
+# x3mRouting {'server='1|2|3|all} {'ipset_name='IPSET[,IPSET]...} ['proto='"protocol[:port][,port] ..." ['del'[=force]]
 #___________________________________________________________________________________________________
 
 SCR_NAME=$(basename "$0" | sed 's/.sh//')     # Script name without .sh
@@ -187,7 +187,7 @@ check_entware() {
 }
 
 get_param() {
-  echo "$*" | sed -n "s/.*$1=\([^ ]*\).*/\1/p"
+  printf "%s\n" "$@" | grep "^$1=" | cut -d'=' -f2
 }
 
 add_entry_to_file() {
@@ -247,8 +247,6 @@ server_param() {
   vpns_id=$(get_param "server" "$@")
   echo "1 2 3 all" | grep -qw "$vpns_id" || exit_error \
     "Invalid server '$vpns_id' specified. Should be 1 or 2 for OpenVPN, 3 for WireGuard or 'all'."
-
-  parse_proto "$@" # Set PROTO_RULE & PROTO_PARAM
 
   if [ "$(echo "$@" | grep -c 'client=')" -gt 0 ]; then
     client=$(get_param "client" "$@")
@@ -408,8 +406,10 @@ vpns_to_ipset() {
   esac
 
   if [ -z "$DEL_FLAG" ]; then
-    ipt nat POSTROUTING "-s $vpns_sub -o $vpnc_iface $PROTO_RULE -j MASQUERADE"
-    ipt mangle PREROUTING "-i $vpns_iface -m set --match-set $IPSET_NAME dst $PROTO_RULE -j MARK --set-mark $fwmark"
+    echo "$PROTO_RULES" | while read -r PROTO_RULE; do
+      ipt nat POSTROUTING "-s $vpns_sub -o $vpnc_iface $PROTO_RULE -j MASQUERADE"
+      ipt mangle PREROUTING "-i $vpns_iface -m set --match-set $IPSET_NAME dst $PROTO_RULE -j MARK --set-mark $fwmark"
+    done
   else # 'del' or 'del=force' option specified
     iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $1}' | sort -nr | while read -r chain_num; do
       iptables -t mangle -D PREROUTING "$chain_num" && log_info "Deleted PREROUTING Chain $chain_num for IPSET List $IPSET_NAME on $vpns_iface"
@@ -429,7 +429,7 @@ del_ipset_list() { # TODO: Simplify logic
 
   log_info "Checking PREROUTING & POSTROUTING iptables rules..."
   for vpns_iface in tun21 tun22 wgs1; do
-    fw_rule="$(iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $7}')"
+    fw_rule="$(iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" | grep "$IPSET_NAME" | grep "match-set")"
     if [ -n "$fw_rule" ]; then
       vpns_to_ipset "$vpns_iface"
     fi
@@ -463,8 +463,8 @@ del_ipset_list() { # TODO: Simplify logic
 
   log_info "Checking if IPSET backup file exists..."
   if [ -f "$DIR/$IPSET_NAME" ]; then
-    non_empty_lines=$(grep -cvE '^\s*$' "$DIR/$IPSET_NAME")
     if [ "$DEL_FLAG" = "del" ]; then
+      non_empty_lines=$(grep -cvE '^\s*$' "$DIR/$IPSET_NAME")
       while true; do
         if [ "$non_empty_lines" -eq 0 ]; then
           printf "NOTICE! The backup '%s' is empty. Delete it? [Y/n]:" "$DIR/$IPSET_NAME" && default="y"
@@ -609,37 +609,39 @@ ip_param() {
   sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n "$DIR/$IPSET_NAME" -o "$DIR/$IPSET_NAME"
 }
 
-parse_proto() { # TODO: Refactor to work like this: proto="tcp:80,443 udp:53 icmp"
-  protocol=$(get_param "protocol" "$*" | awk '{print tolower($0)}')
-  ports=$(get_param "ports" "$*")
+parse_proto() {
+  proto=$(get_param "proto" "$@")
 
-  if [ -n "$protocol" ]; then
-    protocols=$(awk '{print tolower($1)}' /etc/protocols | grep -v '^#' | tr '\n' ' ')
+  if [ -n "$proto" ]; then
+    for p in $proto; do # Split proto parameter into individual entries
+      protocol=$(echo "$p" | cut -d':' -f1 | awk '{print tolower($0)}')
+      ports=$(echo "$p" | cut -sd':' -f2)
 
-    echo "$protocols" | grep -qw "$protocol" || exit_error "Unsupported protocol: '$protocol'."
+      protocols=$(awk '{print tolower($1)}' /etc/protocols | tr '\n' ' ') # Validate protocol
+      echo "$protocols" | grep -qw "$protocol" || exit_error "Unsupported protocol: '$protocol'."
 
-    if [ -n "$ports" ]; then
-      if ! echo "$ports" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
-        exit_error "The 'ports=' parameter should contain only digits and commas."
-      elif ! echo "tcp udp udplite sctp dccp" | grep -qw "$protocol"; then
-        exit_error "Unsupported protocol '$protocol' for port parameter. Accept only TCP, UDP, UDPLITE, SCTP, DCCP."
-      else
-        port_list=$(echo "$ports" | tr ',' ' ')
-        for port in $port_list; do
-          if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-            exit_error "Port numbers in 'ports=' must be between 1 and 65535."
-          fi
-        done
+      if [ -n "$ports" ]; then
+        if ! echo "$ports" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
+          exit_error "Ports should contain only digits and commas."
+        elif ! echo "tcp udp udplite sctp dccp" | grep -qw "$protocol"; then
+          exit_error "Protocol '$protocol' doesn't support ports. Only TCP, UDP, UDPLITE, SCTP, and DCCP accept ports."
+        else
+          port_list=$(echo "$ports" | tr ',' ' ')
+          for port in $port_list; do
+            if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+              exit_error "Invalid $port number. Must be between 1 and 65535."
+            fi
+          done
+        fi
       fi
-    fi
 
-    if [ -n "$protocol" ] && [ -n "$ports" ]; then
-      PROTO_RULE="-p $protocol -m multiport --dports $ports"
-      PROTO_PARAM="protocol=$protocol ports=$ports"
-    elif [ -n "$protocol" ] && [ -z "$ports" ]; then
-      PROTO_RULE="-p $protocol"
-      PROTO_PARAM="protocol=$protocol"
-    fi
+      if [ -n "$protocol" ] && [ -n "$ports" ]; then
+        PROTO_RULES=$(printf "%s\n-p %s -m multiport --dports %s" "$PROTO_RULES" "$protocol" "$ports" | awk 'NF')
+      elif [ -n "$protocol" ] && [ -z "$ports" ]; then
+        PROTO_RULES=$(printf "%s\n-p %s" "$PROTO_RULES" "$protocol" | awk 'NF')
+      fi
+    done
+    PROTO_PARAM="proto=\"$proto\""
   fi
 }
 
@@ -670,7 +672,7 @@ check_files_entry() {
   script_entry="sh $SCR_DIR/$SCR_NAME.sh"
 
   if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME $SRC_PARAM $PROTO_PARAM"
+    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME ${SRC_PARAM:-} ${PROTO_PARAM:-}"
   else
     script_entry="$script_entry ipset_name=$IPSET_NAME"
   fi
@@ -743,23 +745,23 @@ conf_route_tags() {
   esac
 }
 
-set_wg_rpfilter() {
+set_wg_rp_filter() {
   if [ "${ROUTE_TABLE#wgc}" != "$ROUTE_TABLE" ]; then # Check if $ROUTE_TABLE starts with 'wgc'
-    # Here we set the reverse path filtering mode for the interface 'wgc*'.
-    # This setting is only necessary for WireGuard. OpenVPN on Asuswrt-Merlin defaults to '0'.
+    # Here we set the reverse path filtering mode for 'wgc*' interface.
+    # This setting is only for WireGuard. OpenVPN on Asuswrt-Merlin defaults to '0'.
     # 0 - Disables reverse path filtering, accepting all packets without verifying the source route.
     # 1 - Strict mode, accepting packets only if the route to the source IP matches the incoming interface.
     # 2 - Loose mode, allowing packets to be accepted on any interface as long as a route to the source IP exists.
-    rp_filter="echo 2 >/proc/sys/net/ipv4/conf/$ROUTE_TABLE/rp_filter"
+    rp_filter="/proc/sys/net/ipv4/conf/$ROUTE_TABLE/rp_filter"
 
-    if [ -f "/proc/sys/net/ipv4/conf/$ROUTE_TABLE/rp_filter" ]; then
-      eval "$rp_filter"
+    if [ -f "$rp_filter" ]; then
+      echo 2 >$rp_filter
     else
       log_info "rp_filter file not found, VPN server '$ROUTE_TABLE' likely disabled."
     fi
 
     for file in "$NAT_START" "$WG_START" "$WAN_EVENT"; do
-      add_entry_to_file "$file" "$rp_filter" # Ensure 'rp_filter' is set across restart and reboot.
+      add_entry_to_file "$file" "echo 2 >$rp_filter" # Ensure 'rp_filter' is set across restart and reboot.
     done
   fi
 }
@@ -787,7 +789,10 @@ set_iprule_ipt() {
     ip rule add from 0/0 fwmark "$TAG_MARK" table "$ROUTE_TABLE" prio "$priority" && ip route flush cache
     log_info "Created ip rule for table $ROUTE_TABLE with fwmark $TAG_MARK"
   fi
-  ipt mangle PREROUTING "-i br0 $SRC_RULE -m set --match-set $IPSET_NAME dst $PROTO_RULE -j MARK --set-mark $TAG_MARK"
+
+  echo "$PROTO_RULES" | while read -r PROTO_RULE; do
+    ipt mangle PREROUTING "-i br0 $SRC_RULE -m set --match-set $IPSET_NAME dst $PROTO_RULE -j MARK --set-mark $TAG_MARK"
+  done
 }
 
 ipt() {
@@ -803,8 +808,7 @@ ipt() {
 #======================================== End of functions =========================================
 
 if [ "$1" = "help" ] || [ "$1" = "-h" ]; then
-  show_help
-  exit 0
+  show_help && exit 0
 fi
 
 check_entware 120 || exit_error "Entware not ready. Unable to access ipset save/restore location"
@@ -820,6 +824,8 @@ DEL_FLAG=$(case "$@" in
   *del=force*) echo "FORCE" ;;
   *del*) echo "del" ;;
 esac)
+
+parse_proto "$@" # Set PROTO_RULES & PROTO_PARAM
 
 if [ "${1%%=*}" = "server" ]; then # Process 'server=' parameter
   if [ "${2%%=*}" != "client" ] && [ "${2%%=*}" != "ipset_name" ]; then
@@ -864,6 +870,7 @@ elif echo "$1" | grep -Eq '^[0-5]|1[1-5]$'; then # Create IPSET and set SRC_IFAC
   else
     exit_error "Second parameter must be 0 (WAN), 1-5 (WireGuard), or 11-15 (OpenVPN)."
   fi
+  parse_src_option "$@" # Set SRC_RULE & SRC_PARAM
 else
   exit_error "First parameter must be 'server=', 'ipset_name=', 0 (WAN), 1-5 (WireGuard), or 11-15 (OpenVPN)."
 fi
@@ -879,16 +886,14 @@ case "$@" in
 esac
 
 if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-  parse_proto "$@"      # Set PROTO_RULE & PROTO_PARAM
-  parse_src_option "$@" # Set SRC_RULE & SRC_PARAM
-  check_files_entry
   conf_route_tags
-  set_wg_rpfilter
+  set_wg_rp_filter
   set_ipset
   set_iprule_ipt
-elif [ "${1%%=*}" = "ipset_name" ]; then
   check_files_entry
+elif [ "${1%%=*}" = "ipset_name" ]; then
   set_ipset
+  check_files_entry
 fi
 
 exit_routine
