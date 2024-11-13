@@ -9,7 +9,7 @@
 # Integrated WireGuard client/server and protocol/ports support.
 # Currently not working with WireGuard:
 #  - VPN Server to VPN Client Routing
-# Last updated: 22-Oct-2024
+# Last updated: 13-Nov-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -323,7 +323,7 @@ vpns_to_vpnc() { # TODO: Add WG support
         nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$vpnc_ip_list"
       fi
       nvram commit
-      logger -st "($(basename "$0"))" $$ "Restarting VPN Client ${VPN_CLIENT_INSTANCE} to add policy rule for VPN Server ${vpns_id}"
+      log_info "Restarting VPN Client ${VPN_CLIENT_INSTANCE} to add policy rule for VPN Server ${vpns_id}"
       service restart_vpnclient"${VPN_CLIENT_INSTANCE}"
     else # if the VPN Server entry exists in nvram using the 'vpnserverX' name created by the prior version, convert it to the new name
       if [ "$(echo "$vpnc_ip_list" | grep -c "vpnserver${vpns_id}")" -ge 1 ]; then
@@ -340,7 +340,7 @@ vpns_to_vpnc() { # TODO: Add WG support
           nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$vpnc_ip_list"
         fi
         nvram commit
-        logger -st "($(basename "$0"))" $$ "Restarting vpnclient ${VPN_CLIENT_INSTANCE} for policy rule for VPN Server ${vpns_id} to take effect"
+        log_info "Restarting vpnclient ${VPN_CLIENT_INSTANCE} for policy rule for VPN Server ${vpns_id} to take effect"
         service restart_vpnclient"${VPN_CLIENT_INSTANCE}"
       fi
     fi
@@ -364,7 +364,7 @@ vpns_to_vpnc() { # TODO: Add WG support
         nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$vpnc_ip_list"
       fi
       nvram commit
-      logger -st "($(basename "$0"))" $$ "Restarting vpnclient ${VPN_CLIENT_INSTANCE} to remove policy rule for VPN Server ${vpns_id}"
+      log_info "Restarting vpnclient ${VPN_CLIENT_INSTANCE} to remove policy rule for VPN Server ${vpns_id}"
       service restart_vpnclient"${VPN_CLIENT_INSTANCE}"
     fi
   fi
@@ -768,9 +768,13 @@ set_wg_rp_filter() {
 
 set_ipset() {
   if ! ipset list -n "$IPSET_NAME" >/dev/null 2>&1; then
-    ipset create "$IPSET_NAME" hash:net family inet hashsize 1024 maxelem 65536 && touch "$DIR/$IPSET_NAME"
+    if echo "$@" | grep -qE '\s(dnsmasq|autoscan)' || grep -q "ipset=.*$IPSET_NAME" "$DNSMASQ_CONF"; then
+      ipset create "$IPSET_NAME" hash:net family inet hashsize 1024 maxelem 2048 timeout 43200 # 12 hours
+    else
+      ipset create "$IPSET_NAME" hash:net family inet hashsize 16384 maxelem 32768
+      touch "$DIR/$IPSET_NAME" && log_info "Created bak file for IPSET: $DIR/$IPSET_NAME"
+    fi
     log_info "Created IPSET: $IPSET_NAME"
-    log_info "Created bak file for IPSET: $DIR/$IPSET_NAME"
   fi
 
   if [ -s "$DIR/$IPSET_NAME" ]; then
@@ -888,7 +892,7 @@ esac
 if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
   conf_route_tags
   set_wg_rp_filter
-  set_ipset
+  set_ipset "$@"
   set_iprule_ipt
   check_files_entry
 elif [ "${1%%=*}" = "ipset_name" ]; then
