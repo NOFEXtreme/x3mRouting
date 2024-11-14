@@ -1,5 +1,9 @@
 # x3mRouting ~ Selective Routing for Asuswrt-Merlin Firmware
-#### ``Modified by NOFEXtream: Integrated WireGuard client/server and protocol/ports support in x3mRouting.sh``
+
+#### Modified by NOFEXtream:
+- Added WireGuard client/server support and protocol/port handling to [x3mRouting.sh](https://github.com/NOFEXtreme/x3mRouting/blob/master/x3mRouting.sh).
+- Full usage instructions can be found at the beginning of the file.
+
 ## Version 2.4.5 (23 May, 2021)
 [![Build Status](https://travis-ci.com/Xentrk/x3mRouting.svg?branch=master)](https://travis-ci.com/Xentrk/x3mRouting)
 [![Codacy Badge](https://api.codacy.com/project/badge/Grade/561d1570ed1f4d6aab76bba172f6b31f)](https://www.codacy.com/app/Xentrk/x3mRouting?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=Xentrk/x3mRouting&amp;utm_campaign=Badge_Grade)
