@@ -490,7 +490,7 @@ dnsmasq_param() {
   domains=$(get_param "dnsmasq" "$@" | tr ',' '/' | sed 's|/$||')
 
   [ -z "$domains" ] && [ -s "$dnsmasq_file" ] && domains=$(tr '\n' '/' <"$dnsmasq_file" | sed 's|/$||')
-  [ -z "$domains" ] && exit_error "'dnsmasq' parameter cannot be empty."
+  [ -z "$domains" ] && exit_error "No 'dnsmasq' parameter or valid non-empty 'dnsmasq_file' provided."
 
   update_dnsmasq_conf "$domains"
 }
