@@ -9,7 +9,7 @@
 # Integrated WireGuard client/server and protocol/ports support.
 # Currently not working with WireGuard:
 #  - VPN Server to VPN Client Routing
-# Last updated: 13-Nov-2024
+# Last updated: 22-Nov-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -230,9 +230,9 @@ check_if_empty() {
     if [ "$DEL_FLAG" = "del" ]; then
       while true; do
         printf "NOTICE! '%s' is empty. Delete it? [Y/n]:" "$file"
-        read -r "OPTION"
-        case "$OPTION" in
-          [yY][eE][sS] | [yY] | '') rm "$file" && log_info "Deleted file $file" && break ;;
+        read -r option
+        case "${option:-y}" in
+          [yY][eE][sS] | [yY]) rm "$file" && log_info "Deleted file $file" && break ;;
           [nN][oO] | [nN]) break ;;
           *) echo "Invalid option. File not deleted." ;;
         esac
@@ -471,9 +471,8 @@ del_ipset_list() { # TODO: Simplify logic
         else
           printf "WARNING! The backup '%s' is NOT empty. Delete it? [y/N]:" "$DIR/$IPSET_NAME" && default="n"
         fi
-        read -r "OPTION"
-        OPTION=${OPTION:-$default}
-        case "$OPTION" in
+        read -r option
+        case "${option:-$default}" in
           [yY][eE][sS] | [yY]) rm "$DIR/$IPSET_NAME" && log_info "Deleted file '$DIR/$IPSET_NAME'" && break ;;
           [nN][oO] | [nN]) break ;;
           *) echo "Invalid option. File not deleted." ;;
