@@ -9,7 +9,7 @@
 # Integrated WireGuard client/server and protocol/ports support.
 # Currently not working with WireGuard:
 #  - VPN Server to VPN Client Routing
-# Last updated: 22-Nov-2024
+# Last updated: 25-Nov-2024
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -111,6 +111,10 @@ log_warning() {
   log_info "WARNING! $*"
 }
 
+release_lock() {
+  [ -f "$LOCK_FILE" ] && rm -f "$LOCK_FILE"
+}
+
 exit_error() {
   [ "$LOCK_ACTIVE" = "true" ] && release_lock
   log_info "ERROR! $*"
@@ -123,8 +127,18 @@ exit_routine() {
   exit 0
 }
 
-release_lock() {
-  [ -f "$LOCK_FILE" ] && rm -f "$LOCK_FILE"
+kill_lock() {
+  if [ -f "$LOCK_FILE" ]; then
+    pid=$(sed -n '2p' "$LOCK_FILE")
+    if [ -d "/proc/$pid" ]; then
+      log_info "Killing locked processes ($(sed -n '1p' "$LOCK_FILE")) (pid=$pid)"
+      log_info "$(ps | awk -v pid="$pid" '$1 == pid')"
+      kill "$pid"
+    else
+      log_info "Process with PID $pid is not running, cleaning up lock file."
+    fi
+    rm -f "$LOCK_FILE"
+  fi
 }
 
 check_lock() {
@@ -154,20 +168,6 @@ check_lock() {
       break
     fi
   done
-}
-
-kill_lock() {
-  if [ -f "$LOCK_FILE" ]; then
-    pid=$(sed -n '2p' "$LOCK_FILE")
-    if [ -d "/proc/$pid" ]; then
-      log_info "Killing locked processes ($(sed -n '1p' "$LOCK_FILE")) (pid=$pid)"
-      log_info "$(ps | awk -v pid="$pid" '$1 == pid')"
-      kill "$pid"
-    else
-      log_info "Process with PID $pid is not running, cleaning up lock file."
-    fi
-    rm -f "$LOCK_FILE"
-  fi
 }
 
 check_entware() {
@@ -204,19 +204,6 @@ add_entry_to_file() {
   fi
 }
 
-delete_entry_from_file() {
-  file="$1"
-  pattern="$2"
-
-  if [ -f "$file" ]; then
-    if grep -qw "$pattern" "$file"; then
-      sed -i "\|\b$pattern\b|d" "$file" && log_info "Entry matching '$pattern' deleted from $file"
-      [ "$file" = "$DNSMASQ_CONF" ] && service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
-    fi
-    check_if_empty "$file"
-  fi
-}
-
 check_if_empty() {
   file="$1"
 
@@ -243,51 +230,27 @@ check_if_empty() {
   fi
 }
 
-server_param() {
-  vpns_id=$(get_param "server" "$@")
-  echo "1 2 3 all" | grep -qw "$vpns_id" || exit_error \
-    "Invalid server '$vpns_id' specified. Should be 1 or 2 for OpenVPN, 3 for WireGuard or 'all'."
+delete_entry_from_file() {
+  file="$1"
+  pattern="$2"
 
-  if [ "$(echo "$@" | grep -c 'client=')" -gt 0 ]; then
-    client=$(get_param "client" "$@")
-    echo "11 12 13 14 15" | grep -qw "$client" || exit_error \
-      "Invalid client '$client' specified. Should be 11-15 for OpenVPN client."
-
-    if [ "$vpns_id" = "all" ]; then
-      for vpns_id in 1 2 3; do
-        vpns_to_vpnc "$vpns_id" "$client"
-      done
-    else
-      vpns_to_vpnc "$vpns_id" "$client"
+  if [ -f "$file" ]; then
+    if grep -qw "$pattern" "$file"; then
+      sed -i "\|\b$pattern\b|d" "$file" && log_info "Entry matching '$pattern' deleted from $file"
+      [ "$file" = "$DNSMASQ_CONF" ] && service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
     fi
+    check_if_empty "$file"
   fi
+}
 
-  if [ "$(echo "$@" | grep -c 'ipset_name=')" -ge 1 ]; then
-    IPSET_NAME=$(get_param "ipset_name" "$@" | tr ',' ' ')
+ipt() {
+  table=$1
+  chain=$2
+  rule=$3
 
-    for IPSET_NAME in $IPSET_NAME; do
-      if [ -n "$IPSET_NAME" ]; then # Check if IPSET list exists
-        if [ "$(ipset list -n "$IPSET_NAME" 2>/dev/null)" != "$IPSET_NAME" ]; then
-          exit_error "IPSET name $IPSET_NAME does not exist."
-        fi
-      fi
-
-      if [ "$vpns_id" = "all" ]; then
-        for vpns_id in 1 2 3; do
-          vpns_to_ipset "$vpns_id"
-        done
-      else
-        vpns_to_ipset "$vpns_id"
-      fi
-    done
-
-    script_entry="sh $SCR_DIR/$SCR_NAME.sh $1 $2 $PROTO_PARAM"
-    if [ -z "$DEL_FLAG" ]; then
-      add_entry_to_file "$NAT_START" "$script_entry"
-    else
-      delete_entry_from_file "$NAT_START" "$1 $2"
-    fi
-  fi
+  eval "iptables -t $table -D $chain $rule" 2>/dev/null
+  eval "iptables -t $table -A $chain $rule"
+  log_info "Set iptables -t $table -A $chain $rule"
 }
 
 vpns_to_vpnc() { # TODO: Add WG support
@@ -421,6 +384,53 @@ vpns_to_ipset() {
   fi
 }
 
+server_param() {
+  vpns_id=$(get_param "server" "$@")
+  echo "1 2 3 all" | grep -qw "$vpns_id" || exit_error \
+    "Invalid server '$vpns_id' specified. Should be 1 or 2 for OpenVPN, 3 for WireGuard or 'all'."
+
+  if [ "$(echo "$@" | grep -c 'client=')" -gt 0 ]; then
+    client=$(get_param "client" "$@")
+    echo "11 12 13 14 15" | grep -qw "$client" || exit_error \
+      "Invalid client '$client' specified. Should be 11-15 for OpenVPN client."
+
+    if [ "$vpns_id" = "all" ]; then
+      for vpns_id in 1 2 3; do
+        vpns_to_vpnc "$vpns_id" "$client"
+      done
+    else
+      vpns_to_vpnc "$vpns_id" "$client"
+    fi
+  fi
+
+  if [ "$(echo "$@" | grep -c 'ipset_name=')" -ge 1 ]; then
+    IPSET_NAME=$(get_param "ipset_name" "$@" | tr ',' ' ')
+
+    for IPSET_NAME in $IPSET_NAME; do
+      if [ -n "$IPSET_NAME" ]; then # Check if IPSET list exists
+        if [ "$(ipset list -n "$IPSET_NAME" 2>/dev/null)" != "$IPSET_NAME" ]; then
+          exit_error "IPSET name $IPSET_NAME does not exist."
+        fi
+      fi
+
+      if [ "$vpns_id" = "all" ]; then
+        for vpns_id in 1 2 3; do
+          vpns_to_ipset "$vpns_id"
+        done
+      else
+        vpns_to_ipset "$vpns_id"
+      fi
+    done
+
+    script_entry="sh $SCR_DIR/$SCR_NAME.sh $1 $2 $PROTO_PARAM"
+    if [ -z "$DEL_FLAG" ]; then
+      add_entry_to_file "$NAT_START" "$script_entry"
+    else
+      delete_entry_from_file "$NAT_START" "$1 $2"
+    fi
+  fi
+}
+
 del_ipset_list() { # TODO: Simplify logic
   log_info "Checking files for entry..."
   for file in "$NAT_START" "$WG_START" "$WAN_EVENT" "$DNSMASQ_CONF" "$DIR/$IPSET_NAME"; do
@@ -484,6 +494,14 @@ del_ipset_list() { # TODO: Simplify logic
   fi
 }
 
+update_dnsmasq_conf() {
+  domains="$1"
+
+  [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*$IPSET_NAME|d" "$DNSMASQ_CONF"
+  echo "ipset=/$domains/$IPSET_NAME" >>"$DNSMASQ_CONF" && log_info "Add '$domains' to $DNSMASQ_CONF"
+  service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
+}
+
 dnsmasq_param() {
   dnsmasq_file=$(get_param "dnsmasq_file" "$@")
   domains=$(get_param "dnsmasq" "$@" | tr ',' '/' | sed 's|/$||')
@@ -513,12 +531,16 @@ harvest_dnsmasq_queries() {
   fi
 }
 
-update_dnsmasq_conf() {
-  domains="$1"
+fetch_asn_to_ipset() {
+  asn="$1"
+  file="$DIR/$asn.json"
+  url="https://api.bgpview.io/asn/$asn/prefixes" # https://stat.ripe.net/data/as-routing-consistency/data.json?resource=
 
-  [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*$IPSET_NAME|d" "$DNSMASQ_CONF"
-  echo "ipset=/$domains/$IPSET_NAME" >>"$DNSMASQ_CONF" && log_info "Add '$domains' to $DNSMASQ_CONF"
-  service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
+  log_info "Fetching data from: $url"
+  curl --retry 3 --connect-timeout 3 -sfL -o "$file" "$url" || exit_error "Fetching failed."
+  tr -d "\\" <"$file" |
+    grep -oE "$CIDR_REGEX" |
+    sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME" && rm -f "$file"
 }
 
 asnum_param() {
@@ -542,16 +564,25 @@ asnum_param() {
   done
 }
 
-fetch_asn_to_ipset() {
-  asn="$1"
-  file="$DIR/$asn.json"
-  url="https://api.bgpview.io/asn/$asn/prefixes" # https://stat.ripe.net/data/as-routing-consistency/data.json?resource=
+fetch_aws_to_ipset() {
+  regions=$1
+  file="$DIR/aws-ip-ranges.json"
+  url="https://ip-ranges.amazonaws.com/ip-ranges.json"
 
-  log_info "Fetching data from: $url"
-  curl --retry 3 --connect-timeout 3 -sfL -o "$file" "$url" || exit_error "Fetching failed."
-  tr -d "\\" <"$file" |
-    grep -oE "$CIDR_REGEX" |
-    sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME" && rm -f "$file"
+  if [ ! -s "$file" ] || [ -n "$(find "$file" -mtime +7)" ]; then
+    log_info "Fetching data from: $url"
+    if ! curl --retry 3 --connect-timeout 3 -sfL -o "$file" "$url"; then
+      if [ -s "$file" ]; then
+        log_warning "Fetching failed. Using existing $file."
+      else
+        exit_error "Fetching failed and no existing $file."
+      fi
+    fi
+  fi
+
+  for region in $regions; do
+    grep -B 1 "\"region\": \"$region\"" "$file" | grep -oE "$CIDR_REGEX"
+  done | sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME"
 }
 
 aws_param() {
@@ -572,27 +603,6 @@ aws_param() {
     esac
     fetch_aws_to_ipset "$regions"
   done
-}
-
-fetch_aws_to_ipset() {
-  regions=$1
-  file="$DIR/aws-ip-ranges.json"
-  url="https://ip-ranges.amazonaws.com/ip-ranges.json"
-
-  if [ ! -s "$file" ] || [ -n "$(find "$file" -mtime +7)" ]; then
-    log_info "Fetching data from: $url"
-    if ! curl --retry 3 --connect-timeout 3 -sfL -o "$file" "$url"; then
-      if [ -s "$file" ]; then
-        log_warning "Fetching failed. Using existing $file."
-      else
-        exit_error "Fetching failed and no existing $file."
-      fi
-    fi
-  fi
-
-  for region in $regions; do
-    grep -B 1 "\"region\": \"$region\"" "$file" | grep -oE "$CIDR_REGEX"
-  done | sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME"
 }
 
 ip_param() {
@@ -796,16 +806,6 @@ set_iprule_ipt() {
   echo "$PROTO_RULES" | while read -r PROTO_RULE; do
     ipt mangle PREROUTING "-i br0 $SRC_RULE -m set --match-set $IPSET_NAME dst $PROTO_RULE -j MARK --set-mark $TAG_MARK"
   done
-}
-
-ipt() {
-  table=$1
-  chain=$2
-  rule=$3
-
-  eval "iptables -t $table -D $chain $rule" 2>/dev/null
-  eval "iptables -t $table -A $chain $rule"
-  log_info "Set iptables -t $table -A $chain $rule"
 }
 
 #======================================== End of functions =========================================
