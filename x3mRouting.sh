@@ -537,7 +537,7 @@ fetch_asn_to_ipset() {
   url="https://api.bgpview.io/asn/$asn/prefixes" # https://stat.ripe.net/data/as-routing-consistency/data.json?resource=
 
   log_info "Fetching data from: $url"
-  curl --retry 3 --connect-timeout 3 -sfL -o "$file" "$url" || exit_error "Fetching failed."
+  curl --retry 3 --connect-timeout 3 -sSfL -o "$file" "$url" || exit_error "Fetching failed."
   tr -d "\\" <"$file" |
     grep -oE "$CIDR_REGEX" |
     sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME" && rm -f "$file"
@@ -571,7 +571,7 @@ fetch_aws_to_ipset() {
 
   if [ ! -s "$file" ] || [ -n "$(find "$file" -mtime +7)" ]; then
     log_info "Fetching data from: $url"
-    if ! curl --retry 3 --connect-timeout 3 -sfL -o "$file" "$url"; then
+    if ! curl --retry 3 --connect-timeout 3 -sSfL -o "$file" "$url"; then
       if [ -s "$file" ]; then
         log_warning "Fetching failed. Using existing $file."
       else
