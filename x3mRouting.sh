@@ -204,6 +204,23 @@ add_entry_to_file() {
   fi
 }
 
+prompt_for_deletion() {
+  file="$1"
+  message="$2"
+  default_choice="${3:-n}"
+
+  while true; do
+    printf "%s" "$message"
+    read -r option
+    option="${option:-$default_choice}"
+    case "$option" in
+      [yY][eE][sS] | [yY]) rm "$file" && log_info "Deleted file $file" && return 0 ;;
+      [nN][oO] | [nN]) return 1 ;;
+      *) echo "Invalid option. File not deleted." ;;
+    esac
+  done
+}
+
 check_if_empty() {
   file="$1"
 
@@ -211,21 +228,12 @@ check_if_empty() {
     shebang_line=$(grep -c '^#!/bin/sh$' "$file")
     non_empty_lines=$(grep -cvE '^\s*$' "$file")
     non_empty_lines=$((non_empty_lines - shebang_line))
-  fi
-
-  if [ "$non_empty_lines" -eq 0 ]; then
-    if [ "$DEL_FLAG" = "del" ]; then
-      while true; do
-        printf "NOTICE! '%s' is empty. Delete it? [Y/n]:" "$file"
-        read -r option
-        case "${option:-y}" in
-          [yY][eE][sS] | [yY]) rm "$file" && log_info "Deleted file $file" && break ;;
-          [nN][oO] | [nN]) break ;;
-          *) echo "Invalid option. File not deleted." ;;
-        esac
-      done
-    elif [ "$DEL_FLAG" = "FORCE" ]; then
-      rm "$file" && log_info "Deleted file $file"
+    if [ "$non_empty_lines" -eq 0 ]; then
+      if [ "$DEL_FLAG" = "del" ]; then
+        prompt_for_deletion "$file" "NOTICE! '$file' is empty. Delete it? [Y/n]:" "y"
+      elif [ "$DEL_FLAG" = "FORCE" ]; then
+        rm "$file" && log_info "Deleted file $file"
+      fi
     fi
   fi
 }
@@ -431,39 +439,30 @@ server_param() {
   fi
 }
 
-del_ipset_list() { # TODO: Simplify logic
-  log_info "Checking files for entry..."
-  for file in "$NAT_START" "$WG_START" "$WAN_EVENT" "$DNSMASQ_CONF" "$DIR/$IPSET_NAME"; do
-    delete_entry_from_file "$file" "$IPSET_NAME"
+del_ipset_list() {
+  log_info "Checking iptables rules..."
+  pre_rules=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME")
+
+  for iface in tun21 tun22 wgs1; do
+    echo "$pre_rules" | grep -q "$iface" && vpns_to_ipset "$iface"
   done
 
-  log_info "Checking PREROUTING & POSTROUTING iptables rules..."
-  for vpns_iface in tun21 tun22 wgs1; do
-    fw_rule="$(iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" | grep "$IPSET_NAME" | grep "match-set")"
-    if [ -n "$fw_rule" ]; then
-      vpns_to_ipset "$vpns_iface"
-    fi
-  done
-
-  # Extract the last field (fwmark) from the iptables PREROUTING rule that matches the IPSET name.
-  fwmark=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | awk '{print $NF}' | head -n 1)
-
+  # Extract the fwmark and remove PREROUTING rules if IPSET name is matched
+  fwmark=$(echo "$pre_rules" | awk '{print $NF}' | head -n 1)
   if [ -n "$fwmark" ]; then
-    iptables -nvL PREROUTING -t mangle --line |
-      grep "br0" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $1, $12}' | sort -nr |
-      while read -r chain_num ipset_name; do
-        iptables -t mangle -D PREROUTING "$chain_num" # Delete PREROUTING Rules for Normal IPSET routing
-        log_info "Deleted PREROUTING Chain $chain_num for IPSET List $ipset_name"
-      done
+    echo "$pre_rules" | grep "br0" | awk '{print $1, $12}' | sort -nr | while read -r chain_num ipset_name; do
+      iptables -t mangle -D PREROUTING "$chain_num"
+      log_info "Deleted PREROUTING Chain $chain_num for IPSET List $ipset_name"
+    done
 
-    # Delete the fwmark priority if no IPSET lists are using it
-    if ! iptables -nvL PREROUTING -t mangle --line | grep -m 1 -w "$fwmark" >/dev/null; then
+    # Delete the fwmark ip rule if it's no IPSET lists are using it
+    if ! echo "$pre_rules" | grep -m 1 -w "$fwmark" >/dev/null; then
       ip rule del fwmark "$fwmark" 2>/dev/null && log_info "Deleted ip rule for fwmark $fwmark"
     fi
   fi
 
   log_info "Checking if IPSET list $IPSET_NAME exists..."
-  if [ "$(ipset list -n "$IPSET_NAME" 2>/dev/null)" = "$IPSET_NAME" ]; then
+  if ipset list -n "$IPSET_NAME" >/dev/null 2>&1; then
     if ipset destroy "$IPSET_NAME"; then
       log_info "Deleted IPSET $IPSET_NAME"
     else
@@ -471,23 +470,20 @@ del_ipset_list() { # TODO: Simplify logic
     fi
   fi
 
+  log_info "Checking files for entry..."
+  for file in "$NAT_START" "$WG_START" "$WAN_EVENT" "$DNSMASQ_CONF" "$DIR/$IPSET_NAME"; do
+    delete_entry_from_file "$file" "$IPSET_NAME"
+  done
+
   log_info "Checking if IPSET backup file exists..."
   if [ -f "$DIR/$IPSET_NAME" ]; then
     if [ "$DEL_FLAG" = "del" ]; then
       non_empty_lines=$(grep -cvE '^\s*$' "$DIR/$IPSET_NAME")
-      while true; do
-        if [ "$non_empty_lines" -eq 0 ]; then
-          printf "NOTICE! The backup '%s' is empty. Delete it? [Y/n]:" "$DIR/$IPSET_NAME" && default="y"
-        else
-          printf "WARNING! The backup '%s' is NOT empty. Delete it? [y/N]:" "$DIR/$IPSET_NAME" && default="n"
-        fi
-        read -r option
-        case "${option:-$default}" in
-          [yY][eE][sS] | [yY]) rm "$DIR/$IPSET_NAME" && log_info "Deleted file '$DIR/$IPSET_NAME'" && break ;;
-          [nN][oO] | [nN]) break ;;
-          *) echo "Invalid option. File not deleted." ;;
-        esac
-      done
+      if [ "$non_empty_lines" -ne 0 ]; then
+        prompt_for_deletion "$DIR/$IPSET_NAME" "WARNING! The backup '$DIR/$IPSET_NAME' is NOT empty. Delete it? [y/N]:"
+      else
+        rm "$DIR/$IPSET_NAME" && log_info "Deleted empty file '$DIR/$IPSET_NAME'"
+      fi
     elif [ "$DEL_FLAG" = "FORCE" ]; then
       rm "$DIR/$IPSET_NAME" && log_info "Deleted file '$DIR/$IPSET_NAME'"
     fi
@@ -497,7 +493,7 @@ del_ipset_list() { # TODO: Simplify logic
 update_dnsmasq_conf() {
   domains="$1"
 
-  [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*$IPSET_NAME|d" "$DNSMASQ_CONF"
+  [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*/$IPSET_NAME|d" "$DNSMASQ_CONF"
   echo "ipset=/$domains/$IPSET_NAME" >>"$DNSMASQ_CONF" && log_info "Add '$domains' to $DNSMASQ_CONF"
   service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
 }
@@ -778,7 +774,7 @@ set_wg_rp_filter() {
 set_ipset() {
   if ! ipset list -n "$IPSET_NAME" >/dev/null 2>&1; then
     if echo "$@" | grep -qE '\s(dnsmasq|autoscan)' || grep -q "ipset=.*$IPSET_NAME" "$DNSMASQ_CONF"; then
-      ipset create "$IPSET_NAME" hash:net family inet hashsize 1024 maxelem 2048 timeout 43200 # 12 hours
+      ipset create "$IPSET_NAME" hash:net family inet hashsize 1024 maxelem 2048 timeout 86400 # 24 hours
     else
       ipset create "$IPSET_NAME" hash:net family inet hashsize 16384 maxelem 32768
       touch "$DIR/$IPSET_NAME" && log_info "Created bak file for IPSET: $DIR/$IPSET_NAME"
