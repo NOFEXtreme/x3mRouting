@@ -673,104 +673,6 @@ parse_src_option() {
   fi
 }
 
-check_files_entry() {
-  script_entry="sh $SCR_DIR/$SCR_NAME.sh"
-
-  if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME ${SRC_PARAM:-} ${PROTO_PARAM:-}"
-  else
-    script_entry="$script_entry ipset_name=$IPSET_NAME"
-  fi
-
-  [ "$DIR" != "/opt/tmp" ] && script_entry="$script_entry dir=$DIR"
-
-  add_entry_to_file "$NAT_START" "$script_entry"
-}
-
-conf_route_tags() {
-  case "$DST_IFACE" in
-    0)
-      TAG_MARK="0x8000/0xf000"
-      ROUTE_TABLE=254
-      priority=9980
-      ;;
-    1)
-      TAG_MARK="0xa000/0xf000"
-      ROUTE_TABLE=wgc1
-      priority=9999
-      ;;
-    2)
-      TAG_MARK="0xb000/0xf000"
-      ROUTE_TABLE=wgc2
-      priority=9998
-      ;;
-    3)
-      TAG_MARK="0xc000/0xf000"
-      ROUTE_TABLE=wgc3
-      priority=9997
-      ;;
-    4)
-      TAG_MARK="0xd000/0xf000"
-      ROUTE_TABLE=wgc4
-      priority=9996
-      ;;
-    5)
-      TAG_MARK="0xe000/0xf000"
-      ROUTE_TABLE=wgc5
-      priority=9995
-      ;;
-    11)
-      TAG_MARK="0x1000/0xf000"
-      ROUTE_TABLE=ovpnc1
-      priority=9994
-      ;;
-    12)
-      TAG_MARK="0x2000/0xf000"
-      ROUTE_TABLE=ovpnc2
-      priority=9993
-      ;;
-    13)
-      TAG_MARK="0x4000/0xf000"
-      ROUTE_TABLE=ovpnc3
-      priority=9992
-      ;;
-    14)
-      TAG_MARK="0x7000/0xf000"
-      ROUTE_TABLE=ovpnc4
-      priority=9991
-      ;;
-    15)
-      TAG_MARK="0x3000/0xf000"
-      ROUTE_TABLE=ovpnc5
-      priority=9990
-      ;;
-    *)
-      exit_error "$DST_IFACE should be 0-WAN or 1-5 for WireGuard Client or 11-15 for OpenVPN Client"
-      ;;
-  esac
-}
-
-set_wg_rp_filter() {
-  if [ "${ROUTE_TABLE#wgc}" != "$ROUTE_TABLE" ]; then # Check if $ROUTE_TABLE starts with 'wgc'
-    # Here we set the reverse path filtering mode for 'wgc*' interface.
-    # This setting is only for WireGuard. OpenVPN on Asuswrt-Merlin defaults to '0'.
-    # 0 - Disables reverse path filtering, accepting all packets without verifying the source route.
-    # 1 - Strict mode, accepting packets only if the route to the source IP matches the incoming interface.
-    # 2 - Loose mode, allowing packets to be accepted on any interface as long as a route to the source IP exists.
-    rp_filter="/proc/sys/net/ipv4/conf/$ROUTE_TABLE/rp_filter"
-
-    if [ -f "$rp_filter" ]; then
-      echo 2 >$rp_filter
-    else
-      log_info "rp_filter file not found, VPN server '$ROUTE_TABLE' likely disabled."
-    fi
-
-    for file in "$NAT_START" "$WG_START" "$WAN_EVENT"; do
-      add_entry_to_file "$file" "echo 2 >$rp_filter" # Ensure 'rp_filter' is set across restart and reboot.
-    done
-  fi
-}
-
 set_ipset() {
   if ! ipset list -n "$IPSET_NAME" >/dev/null 2>&1; then
     if echo "$@" | grep -qE '\s(dnsmasq|autoscan)' || grep -q "ipset=.*$IPSET_NAME" "$DNSMASQ_CONF"; then
@@ -794,6 +696,21 @@ set_ipset() {
 }
 
 set_iprule_ipt() {
+    case "$DST_IFACE" in
+    0) TAG_MARK="0x8000/0xf000"; ROUTE_TABLE=254; priority=9980 ;;
+    1) TAG_MARK="0xa000/0xf000"; ROUTE_TABLE=wgc1; priority=9999 ;;
+    2) TAG_MARK="0xb000/0xf000"; ROUTE_TABLE=wgc2; priority=9998 ;;
+    3) TAG_MARK="0xc000/0xf000"; ROUTE_TABLE=wgc3; priority=9997 ;;
+    4) TAG_MARK="0xd000/0xf000"; ROUTE_TABLE=wgc4; priority=9996 ;;
+    5) TAG_MARK="0xe000/0xf000"; ROUTE_TABLE=wgc5; priority=9995 ;;
+    11) TAG_MARK="0x1000/0xf000"; ROUTE_TABLE=ovpnc1; priority=9994 ;;
+    12) TAG_MARK="0x2000/0xf000"; ROUTE_TABLE=ovpnc2; priority=9993 ;;
+    13) TAG_MARK="0x4000/0xf000"; ROUTE_TABLE=ovpnc3; priority=9992 ;;
+    14) TAG_MARK="0x7000/0xf000"; ROUTE_TABLE=ovpnc4; priority=9991 ;;
+    15) TAG_MARK="0x3000/0xf000"; ROUTE_TABLE=ovpnc5; priority=9990 ;;
+    *) exit_error "$DST_IFACE should be 0-WAN or 1-5 for WireGuard Client or 11-15 for OpenVPN Client" ;;
+  esac
+
   if ! ip rule | grep -q "$TAG_MARK"; then
     ip rule add from 0/0 fwmark "$TAG_MARK" table "$ROUTE_TABLE" prio "$priority" && ip route flush cache
     log_info "Created ip rule for table $ROUTE_TABLE with fwmark $TAG_MARK"
@@ -802,6 +719,20 @@ set_iprule_ipt() {
   echo "$PROTO_RULES" | while read -r PROTO_RULE; do
     ipt mangle PREROUTING "-i br0 $SRC_RULE -m set --match-set $IPSET_NAME dst $PROTO_RULE -j MARK --set-mark $TAG_MARK"
   done
+}
+
+check_files_entry() {
+  script_entry="sh $SCR_DIR/$SCR_NAME.sh"
+
+  if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
+    script_entry="$script_entry $SRC_IFACE $DST_IFACE $IPSET_NAME ${SRC_PARAM:-} ${PROTO_PARAM:-}"
+  else
+    script_entry="$script_entry ipset_name=$IPSET_NAME"
+  fi
+
+  [ "$DIR" != "/opt/tmp" ] && script_entry="$script_entry dir=$DIR"
+
+  add_entry_to_file "$NAT_START" "$script_entry"
 }
 
 #======================================== End of functions =========================================
@@ -885,8 +816,6 @@ case "$@" in
 esac
 
 if [ -n "$SRC_IFACE" ] && [ -n "$DST_IFACE" ]; then
-  conf_route_tags
-  set_wg_rp_filter
   set_ipset "$@"
   set_iprule_ipt
   check_files_entry
