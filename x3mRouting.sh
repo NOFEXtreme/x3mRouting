@@ -530,7 +530,7 @@ harvest_dnsmasq_queries() {
 fetch_asn_to_ipset() {
   asn="$1"
   file="$DIR/$asn.json"
-  url="https://api.bgpview.io/asn/$asn/prefixes" # https://stat.ripe.net/data/as-routing-consistency/data.json?resource=
+  url="https://stat.ripe.net/data/as-routing-consistency/data.json?resource=$asn"
 
   log_info "Fetching data from: $url"
   curl --retry 3 --connect-timeout 3 -sSfL -o "$file" "$url" || exit_error "Fetching failed."
