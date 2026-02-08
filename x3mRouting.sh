@@ -7,9 +7,7 @@
 #
 # Modified by NOFEXtream: https://github.com/NOFEXtreme/x3mRouting/blob/master/x3mRouting.sh
 # Integrated WireGuard client/server and protocol/ports support.
-# Currently not working with WireGuard:
-#  - VPN Server to VPN Client Routing
-# Last updated: 25-Nov-2024
+# Last updated: 8-Feb-2025
 #
 # Grateful:
 #   Thank you to @Martineau on snbforums.com for sharing his Selective Routing expertise,
@@ -78,7 +76,7 @@
 #---------------------------------------------------------------------------------------------------
 # VPN Server to VPN Client Routing: (Work only with OpenVPN)
 #
-# x3mRouting {'server='1|2} {'client='11|12|13|14|15} ['del'] ['del=force']
+# x3mRouting {'server='1|2} {'client='1|2|3|4|5|11|12|13|14|15} ['del'] ['del=force']
 #---------------------------------------------------------------------------------------------------
 # VPN Server to existing LAN routing rules for one or more IPSET lists
 #
@@ -95,12 +93,11 @@ DNSMASQ_CONF="/jffs/configs/dnsmasq.conf.add" # dnsmasq configuration file
 
 VPN_IDS="1 2 3 4 5 11 12 13 14 15"
 IP_RE='([1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\.(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])){3}'
-IP_RE_PREFIX='([1-9]?[12][0-9]|3[0-2])'
+IP_RE_PREFIX='(3[0-2]|[12][0-9]|[89])'
 CIDR_REGEX="$IP_RE/$IP_RE_PREFIX"
 
 show_help() {
-  # Print from line starting with '#__' to the first blank line (source: Martineau)
-  awk '/^#__/{f=1} f{print; if (!NF) exit}' "$0" | more
+  awk '/^# Required parameters are listed inside the braces:/ {f=1} f && /^#__/ {exit} f {print}' "$0" | more
 }
 
 log_info() {
@@ -199,7 +196,11 @@ add_entry_to_file() {
   fi
 
   if ! grep -Fq "$entry" "$file"; then
-    echo "$entry # $SCR_NAME for ipset name: $IPSET_NAME" >>"$file"
+    if [ -n "$IPSET_NAME" ]; then
+      echo "$entry # $SCR_NAME for ipset name: $IPSET_NAME" >>"$file"
+    else
+      echo "$entry # $SCR_NAME" >>"$file"
+    fi
     log_info "Add '$entry' to $file"
   fi
 }
@@ -226,7 +227,7 @@ check_if_empty() {
 
   if [ -f "$file" ]; then
     shebang_line=$(grep -c '^#!/bin/sh$' "$file")
-    non_empty_lines=$(grep -cvE '^\s*$' "$file")
+    non_empty_lines=$(grep -cvE '^[[:space:]]*$' "$file")
     non_empty_lines=$((non_empty_lines - shebang_line))
     if [ "$non_empty_lines" -eq 0 ]; then
       if [ "$DEL_FLAG" = "del" ]; then
@@ -261,82 +262,159 @@ ipt() {
   log_info "Set iptables -t $table -A $chain $rule"
 }
 
-vpns_to_vpnc() { # TODO: Add WG support
-  vpns_id=$1
-  vpnc_id=$2
+vpns_to_vpnc() {
+  vpns_id="$1"  # 1|2 (OpenVPN Server) | 3 (WireGuard Server = wgs1)
+  vpnc_id="$2"  # 11..15 (OpenVPN Client) | 1..5 (WireGuard Client)
+  src_cidrs=""
+  vpns_iface=""
 
-  vpns_sub="$(nvram get vpn_server"${vpns_id}"_sn)/24"
-  policy_rule="<VPN Server ${vpns_id}>${vpns_sub}>>VPN"
+  case "$vpns_id" in
+    1|2)
+      vpns_iface="tun2${vpns_id}"
 
-  vpnc_iface="tun${vpnc_id}"
-  vpnc_ip_list="$(nvram get vpn_client"${vpnc_id#1}"_clientlist)"
+      ip link show dev "$vpns_iface" 2>/dev/null | grep -q "UP" || exit_error "OpenVPN Server ${vpns_iface} is not UP."
 
-  for n in 1 2 3 4 5; do
-    vpnc_ip_list="${vpnc_ip_list}$(nvram get vpn_client"$vpnc_id"_clientlist"${n}")"
-  done
+      vpns_sn="$(nvram get vpn_server${vpns_id}_sn 2>/dev/null)"
+      [ -n "$vpns_sn" ] || exit_error "vpn_server${vpns_id}_sn is empty."
+      src_cidrs="${vpns_sn}/24"
+      ;;
+    3)
+      ip link show dev wgs1 2>/dev/null | grep -q "UP" || exit_error "WireGuard Server wgs1 is not UP."
 
-  if [ -z "$DEL_FLAG" ]; then # Add entry if DEL_FLAG is null
-    ipt nat POSTROUTING "-s $vpns_sub -o $vpnc_iface $PROTO_PARAM -j MASQUERADE"
-    add_entry_to_file "$NAT_START" "sh $SCRIPT_DIR/$SCR_NAME.sh server=$vpns_id client=$vpnc_id"
+      # Collect WireGuard peer source CIDRs from routes bound to wgs1.
+      src_cidrs="$(ip route show dev wgs1 scope link 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 
-    # Add nvram entry to vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist
-    if [ "$(echo "$vpnc_ip_list" | grep -c "${vpns_sub}>>VPN")" -eq 0 ]; then
-      vpnc_ip_list="${vpnc_ip_list}${policy_rule}"
-      if [ "$(uname -m)" = "aarch64" ]; then
-        low=0
-        max=255
-        for n in "" $VPN_IDS; do
-          nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist"${n}"="$(echo "$vpnc_ip_list" | cut -b $low-$max)"
-          low=$((max + 1))
-          max=$((low + 254))
-        done
-      else
-        nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$vpnc_ip_list"
-      fi
-      nvram commit
-      log_info "Restarting VPN Client ${VPN_CLIENT_INSTANCE} to add policy rule for VPN Server ${vpns_id}"
-      service restart_vpnclient"${VPN_CLIENT_INSTANCE}"
-    else # if the VPN Server entry exists in nvram using the 'vpnserverX' name created by the prior version, convert it to the new name
-      if [ "$(echo "$vpnc_ip_list" | grep -c "vpnserver${vpns_id}")" -ge 1 ]; then
-        vpnc_ip_list="$(echo "$vpnc_ip_list" | sed "s/<vpnserver${vpns_id}>/<VPN Server ${vpns_id}>/")"
+      [ -n "$src_cidrs" ] || exit_error "WireGuard Server wgs1 has no clients routes."
+      ;;
+    *)
+      exit_error "Invalid server '$vpns_id'. Use 1|2 (OpenVPN) or 3 (WireGuard)."
+      ;;
+  esac
+
+  if echo "$vpnc_id" | grep -Eq '^(1|2|3|4|5)$'; then # WireGuard Client
+    vpnc_type="wg"
+    vpnc_inst="$vpnc_id"
+    vpnc_iface="wgc${vpnc_inst}"
+    vpnc_table="wgc${vpnc_inst}"
+    ip link show dev "$vpnc_iface" >/dev/null 2>&1 || exit_error "WireGuard Client interface ${vpnc_iface} not found."
+    ip link show dev "$vpnc_iface" 2>/dev/null | grep -q "UP" || exit_error "WireGuard Client ${vpnc_iface} is not UP."
+  elif echo "$vpnc_id" | grep -Eq '^(11|12|13|14|15)$'; then # OpenVPN Client
+    vpnc_type="ovpn"
+    vpnc_inst="$((vpnc_id - 10))" # 11->1 ... 15->5
+    vpnc_iface="tun${vpnc_id}"
+
+    ip link show dev "$vpnc_iface" >/dev/null 2>&1 || exit_error "OpenVPN Client interface ${vpnc_iface} not found."
+    ip link show dev "$vpnc_iface" 2>/dev/null | grep -q "UP" || exit_error "OpenVPN Client ${vpnc_iface} is not UP."
+  else
+    exit_error "Invalid client '$vpnc_id'. Use 1..5 (WireGuard) or 11..15 (OpenVPN)."
+  fi
+
+  # Apply / Remove
+  if [ -z "$DEL_FLAG" ]; then
+    # NAT: MASQUERADE whole src subnet out via dst client interface
+    for src in $src_cidrs; do
+      ipt nat POSTROUTING "-s $src -o $vpnc_iface -j MASQUERADE"
+    done
+
+    # Persist nat-start entry
+    add_entry_to_file "$NAT_START" "sh $SCR_DIR/$SCR_NAME.sh server=$vpns_id client=$vpnc_id"
+
+    # Routing decision
+    if [ "$vpnc_type" = "ovpn" ]; then
+      # OpenVPN client routing via nvram policy rules (clientlist)
+      vpnc_ip_list="$(nvram get vpn_client${vpnc_inst}_clientlist 2>/dev/null)"
+      for sfx in 1 2 3 4 5; do
+        vpnc_ip_list="${vpnc_ip_list}$(nvram get vpn_client${vpnc_inst}_clientlist${sfx} 2>/dev/null)"
+      done
+
+      changed=0
+      for src in $src_cidrs; do
+        rule="<VPN Server ${vpns_id}>${src}>>VPN"
+        echo "$vpnc_ip_list" | grep -q "${src}>>VPN" || {
+          vpnc_ip_list="${vpnc_ip_list}${rule}"
+          changed=1
+        }
+      done
+
+      if [ "$changed" = "1" ]; then
         if [ "$(uname -m)" = "aarch64" ]; then
           low=0
           max=255
-          for n in "" $VPN_IDS; do
-            nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist"${n}"="$(echo "$vpnc_ip_list" | cut -b $low-$max)"
+          for part in "" 1 2 3 4 5; do
+            nvram set vpn_client${vpnc_inst}_clientlist${part}="$(echo "$vpnc_ip_list" | cut -b $low-$max)"
             low=$((max + 1))
             max=$((low + 254))
           done
         else
-          nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$vpnc_ip_list"
+          nvram set vpn_client${vpnc_inst}_clientlist="$vpnc_ip_list"
         fi
         nvram commit
-        log_info "Restarting vpnclient ${VPN_CLIENT_INSTANCE} for policy rule for VPN Server ${vpns_id} to take effect"
-        service restart_vpnclient"${VPN_CLIENT_INSTANCE}"
+        log_info "Restarting vpnclient ${vpnc_inst} to apply policy rule(s) for VPN Server ${vpns_id}"
+        service restart_vpnclient"${vpnc_inst}"
       fi
+    else # WireGuard client routing via ip rule -> lookup wgcX
+      prio="$((11300 + vpnc_inst))"
+
+      for src in $src_cidrs; do
+        ip rule show | grep -q "from ${src} lookup ${vpnc_table}" || { # Add only if not present
+          ip rule add prio "$prio" from "$src" lookup "$vpnc_table" 2>/dev/null \
+            || exit_error "Failed to add ip rule: prio $prio from $src lookup $vpnc_table"
+          ip route flush cache
+          log_info "Added ip rule: prio $prio from $src lookup $vpnc_table"
+        }
+      done
     fi
-  else # 'del' or 'del=force' parameter passed.
-    iptables -t nat -D POSTROUTING -s "$vpns_sub" -o "$vpnc_iface" -p tcp -m multiport --dports 80,443 -j MASQUERADE 2>/dev/null
 
-    delete_entry_from_file $NAT_START "server=$vpns_id client=$VPN_CLIENT_INSTANCE"
+  else # DELETE mode
+    # Remove NAT rules that match our sources
+    for src in $src_cidrs; do
+      iptables -t nat -D POSTROUTING -s "$src" -o "$vpnc_iface" -j MASQUERADE 2>/dev/null
+    done
 
-    # nvram get vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist
-    if [ "$(echo "$vpnc_ip_list" | grep -c "$policy_rule")" -eq "1" ]; then
-      vpnc_ip_list="$(echo "$vpnc_ip_list" | sed "s,<VPN Server ${vpns_id}>${vpns_sub}>>VPN,,")"
-      if [ "$(uname -m)" = "aarch64" ]; then
-        low=0
-        max=255
-        for n in "" $VPN_IDS; do
-          nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist"${n}"="$(echo "$vpnc_ip_list" | cut -b $low-$max)"
-          low=$((max + 1))
-          max=$((low + 254))
-        done
-      else
-        nvram set vpn_client"${VPN_CLIENT_INSTANCE}"_clientlist="$vpnc_ip_list"
+    # Remove nat-start entry line (fixed-string match)
+    delete_entry_from_file "$NAT_START" "server=$vpns_id client=$vpnc_id"
+
+    # Remove routing decision:
+    if [ "$vpnc_type" = "ovpn" ]; then
+      vpnc_ip_list="$(nvram get vpn_client${vpnc_inst}_clientlist 2>/dev/null)"
+      for sfx in 1 2 3 4 5; do
+        vpnc_ip_list="${vpnc_ip_list}$(nvram get vpn_client${vpnc_inst}_clientlist${sfx} 2>/dev/null)"
+      done
+
+      changed=0
+      for src in $src_cidrs; do
+        rule="<VPN Server ${vpns_id}>${src}>>VPN"
+        echo "$vpnc_ip_list" | grep -q "$rule" && {
+          vpnc_ip_list="$(echo "$vpnc_ip_list" | sed "s,${rule},,g")"
+          changed=1
+        }
+      done
+
+      if [ "$changed" = "1" ]; then
+        if [ "$(uname -m)" = "aarch64" ]; then
+          low=0
+          max=255
+          for part in "" 1 2 3 4 5; do
+            nvram set vpn_client${vpnc_inst}_clientlist${part}="$(echo "$vpnc_ip_list" | cut -b $low-$max)"
+            low=$((max + 1))
+            max=$((low + 254))
+          done
+        else
+          nvram set vpn_client${vpnc_inst}_clientlist="$vpnc_ip_list"
+        fi
+        nvram commit
+        log_info "Restarting vpnclient ${vpnc_inst} to remove policy rule(s) for VPN Server ${vpns_id}"
+        service restart_vpnclient"${vpnc_inst}"
       fi
-      nvram commit
-      log_info "Restarting vpnclient ${VPN_CLIENT_INSTANCE} to remove policy rule for VPN Server ${vpns_id}"
-      service restart_vpnclient"${VPN_CLIENT_INSTANCE}"
+    else
+      prio="$((11300 + vpnc_inst))"
+
+      for src in $src_cidrs; do
+        ip rule del prio "$prio" from "$src" lookup "$vpnc_table" 2>/dev/null || \
+        ip rule del from "$src" lookup "$vpnc_table" 2>/dev/null
+        ip route flush cache
+        log_info "Removed ip rule (if existed): from $src lookup $vpnc_table (prio $prio)"
+      done
     fi
   fi
 }
@@ -373,7 +451,7 @@ vpns_to_ipset() {
     4000) vpnc_iface="tun13" ;;
     7000) vpnc_iface="tun14" ;;
     3000) vpnc_iface="tun15" ;;
-    *) exit_error "$1 should be 1-5 for WireGuard Client or 11-15 for OpenVPN Client" ;;
+    *) exit_error "Unknown fwmark '$fwmark' (mark=${mark}): expected wgc1-5 or tun11-15." ;;
   esac
 
   if [ -z "$DEL_FLAG" ]; then
@@ -399,8 +477,8 @@ server_param() {
 
   if [ "$(echo "$@" | grep -c 'client=')" -gt 0 ]; then
     client=$(get_param "client" "$@")
-    echo "11 12 13 14 15" | grep -qw "$client" || exit_error \
-      "Invalid client '$client' specified. Should be 11-15 for OpenVPN client."
+    echo "1 2 3 4 5 11 12 13 14 15" | grep -qw "$client" || exit_error \
+      "Invalid client '$client' specified. Should be 1-5 for WireGuard client or 11-15 for OpenVPN client."
 
     if [ "$vpns_id" = "all" ]; then
       for vpns_id in 1 2 3; do
@@ -456,7 +534,7 @@ del_ipset_list() {
     done
 
     # Delete the fwmark ip rule if it's no IPSET lists are using it
-    if ! echo "$pre_rules" | grep -m 1 -w "$fwmark" >/dev/null; then
+    if ! iptables -t mangle -S PREROUTING 2>/dev/null | grep -m 1 -w "$fwmark" >/dev/null; then
       ip rule del fwmark "$fwmark" 2>/dev/null && log_info "Deleted ip rule for fwmark $fwmark"
     fi
   fi
@@ -478,7 +556,7 @@ del_ipset_list() {
   log_info "Checking if IPSET backup file exists..."
   if [ -f "$DIR/$IPSET_NAME" ]; then
     if [ "$DEL_FLAG" = "del" ]; then
-      non_empty_lines=$(grep -cvE '^\s*$' "$DIR/$IPSET_NAME")
+      non_empty_lines=$(grep -cvE '^[[:space:]]*$' "$DIR/$IPSET_NAME")
       if [ "$non_empty_lines" -ne 0 ]; then
         prompt_for_deletion "$DIR/$IPSET_NAME" "WARNING! The backup '$DIR/$IPSET_NAME' is NOT empty. Delete it? [y/N]:"
       else
@@ -609,7 +687,7 @@ ip_param() {
   [ -z "$ips" ] && exit_error "'ip' parameter cannot be empty."
 
   for ip in $ips; do
-    echo "$ip" | grep -oE "$IP_RE(/$IP_RE_PREFIX)?" || log_warning "$ip is an invalid IP or CIDR. Skipping entry." >&2
+    echo "$ip" | grep -E "^$IP_RE(/$IP_RE_PREFIX)?$" || log_warning "$ip is an invalid IP or CIDR. Skipping entry." >&2
   done >>"$DIR/$IPSET_NAME"
   sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n "$DIR/$IPSET_NAME" -o "$DIR/$IPSET_NAME"
 }
@@ -675,7 +753,7 @@ parse_src_option() {
 
 set_ipset() {
   if ! ipset list -n "$IPSET_NAME" >/dev/null 2>&1; then
-    if echo "$@" | grep -qE '\s(dnsmasq|autoscan)' || grep -q "ipset=.*$IPSET_NAME" "$DNSMASQ_CONF"; then
+    if echo "$@" | grep -qE '[[:space:]](dnsmasq|autoscan)' || grep -q "ipset=.*$IPSET_NAME" "$DNSMASQ_CONF"; then
       ipset create "$IPSET_NAME" hash:net family inet hashsize 1024 maxelem 2048 timeout 86400 # 24 hours
     else
       ipset create "$IPSET_NAME" hash:net family inet hashsize 16384 maxelem 32768
@@ -772,13 +850,13 @@ fi
 if [ "${1%%=*}" = "ipset_name" ]; then # Only create IPSET without routing
   IPSET_NAME=$(get_param "ipset_name" "$@")
   [ -z "$IPSET_NAME" ] && exit_error "'ipset_name' parameter cannot be empty."
-elif echo "$1" | grep -Eq '^[0-5]|1[1-5]$'; then # Create IPSET and set SRC_IFACE and DST_IFACE with routing
+elif echo "$1" | grep -Eq '^([0-5]|1[1-5])$'; then # Create IPSET and set SRC_IFACE and DST_IFACE with routing
   SRC_IFACE=$1
   DST_IFACE=$2
   IPSET_NAME=$3
 
   if [ -n "$DST_IFACE" ]; then
-    if { [ "$SRC_IFACE" = 0 ] && ! echo "$DST_IFACE" | grep -Eq '^[1-5]|1[1-5]$'; } ||
+    if { [ "$SRC_IFACE" = 0 ] && ! echo "$DST_IFACE" | grep -Eq '^([1-5]|1[1-5])$'; } ||
       { echo "$VPN_IDS" | grep -qw "$SRC_IFACE" && [ "$DST_IFACE" != 0 ]; }; then
       exit_error "Invalid source '$SRC_IFACE' and destination '$DST_IFACE' combination."
     fi
@@ -791,7 +869,7 @@ elif echo "$1" | grep -Eq '^[0-5]|1[1-5]$'; then # Create IPSET and set SRC_IFAC
       exit_error "Third parameter must be IPSET name"
     fi
 
-    if ! echo "$@" | grep -qE '\s(del|dnsmasq|autoscan|asnum|aws_region|ip)' && # none of the params are present
+    if ! echo "$@" | grep -qE '[[:space:]](del|dnsmasq|autoscan|asnum|aws_region|ip)' && # none of the params are present
       [ ! -s "$DIR/$IPSET_NAME" ] &&                                            # file does not exist or is empty
       ! ipset list -n | grep -qFx "$IPSET_NAME" &&                              # ipset does not exist
       ! grep -q "ipset=.*$IPSET_NAME" "$DNSMASQ_CONF"; then                     # no entry in $DNSMASQ_CONF
