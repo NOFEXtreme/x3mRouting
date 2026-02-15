@@ -612,22 +612,22 @@ fetch_asn_to_ipset() {
 
   log_info "Fetching data from: $url"
   curl --retry 3 --connect-timeout 3 -sSfL -o "$file" "$url" || exit_error "Fetching failed."
-  tr -d "\\" <"$file" |
-    grep -oE "$CIDR_REGEX" |
-    sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n -o "$DIR/$IPSET_NAME" && rm -f "$file"
+  tr -d "\\" <"$file" | grep -oE "$CIDR_REGEX" >> "$DIR/$IPSET_NAME" && rm -f "$file"
 }
 
 asnum_param() {
   asn=$(get_param "asnum" "$@" | tr ',' ' ')
   [ -z "$asn" ] && exit_error "'asnum' parameter cannot be empty."
 
+  : > "$DIR/$IPSET_NAME"
+
   for asn in $asn; do
     prefix=$(printf '%-.2s' "$asn")
     number="$(echo "$asn" | sed 's/^AS//')"
+
     if [ "$prefix" = "AS" ]; then
       # Check for valid Number and skip if bad
-      A=$(echo "$number" | grep -Eo '^[0-9]+$')
-      if [ -z "$A" ]; then
+      if ! echo "$number" | grep -Eq '^[0-9]+$'; then
         echo "Skipping invalid ASN: $number"
       else
         fetch_asn_to_ipset "$asn"
@@ -636,6 +636,7 @@ asnum_param() {
       exit_error "Invalid Prefix specified: $prefix. Valid value is 'AS'"
     fi
   done
+  sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n "$DIR/$IPSET_NAME" -o "$DIR/$IPSET_NAME"
 }
 
 fetch_aws_to_ipset() {
@@ -704,21 +705,30 @@ parse_proto() {
       echo "$protocols" | grep -qw "$protocol" || exit_error "Unsupported protocol: '$protocol'."
 
       if [ -n "$ports" ]; then
-        if ! echo "$ports" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
-          exit_error "Ports should contain only digits and commas."
+        if ! echo "$ports" | grep -Eq '^([0-9]+|[0-9]+-[0-9]+)(,([0-9]+|[0-9]+-[0-9]+))*$'; then
+          exit_error "Ports should contain only digits, commas and ranges (1000-2000)."
         elif ! echo "tcp udp udplite sctp dccp" | grep -qw "$protocol"; then
           exit_error "Protocol '$protocol' doesn't support ports. Only TCP, UDP, UDPLITE, SCTP, and DCCP accept ports."
         else
           port_list=$(echo "$ports" | tr ',' ' ')
           for port in $port_list; do
-            if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-              exit_error "Invalid $port number. Must be between 1 and 65535."
+            if echo "$port" | grep -q -- '-'; then
+              start="${port%-*}"
+              end="${port#*-}"
+              if [ "$start" -lt 1 ] || [ "$end" -gt 65535 ] || [ "$start" -gt "$end" ]; then
+                exit_error "Invalid port range: $port."
+              fi
+            else
+              if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+                exit_error "Invalid $port number. Must be between 1 and 65535."
+              fi
             fi
           done
         fi
       fi
 
       if [ -n "$protocol" ] && [ -n "$ports" ]; then
+        ports=$(echo "$ports" | tr '-' ':')
         PROTO_RULES=$(printf "%s\n-p %s -m multiport --dports %s" "$PROTO_RULES" "$protocol" "$ports" | awk 'NF')
       elif [ -n "$protocol" ] && [ -z "$ports" ]; then
         PROTO_RULES=$(printf "%s\n-p %s" "$PROTO_RULES" "$protocol" | awk 'NF')
