@@ -530,7 +530,6 @@ server_param() {
 
 del_ipset_list() {
   log_info "Checking iptables rules..."
-  pre_rules=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME")
 
   ipset_only_ref="false"
   if [ -f "$NAT_START" ]; then
@@ -578,9 +577,10 @@ del_ipset_list() {
   fi
 
   for iface in tun21 tun22 wgs1; do
-    echo "$pre_rules" | grep -q "$iface" && vpns_to_ipset "$iface"
+    iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | grep -q "$iface" && vpns_to_ipset "$iface"
   done
 
+  pre_rules=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME")
   fwmark=$(echo "$pre_rules" | awk '{print $NF}' | head -n 1) # Extract fwmark and remove PREROUTING br0 rules for this IPSET
   if [ -n "$fwmark" ]; then
     echo "$pre_rules" | grep "br0" | awk '{print $1}' | sort -nr | while read -r num; do
