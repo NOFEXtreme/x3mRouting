@@ -1,11 +1,11 @@
 #!/bin/sh
 # Script: x3mRouting.sh
-# Version: 3.1
+# Version: 3.2
 # Original author: Xentrk
 # Reworked by: NOFEXtream
 # Added WireGuard client/server and protocol/ports support.
 # Repository: https://github.com/NOFEXtreme/x3mRouting
-# Date: 15-Mar-2026
+# Update: 05-Jun-2026
 #---------------------------------------------------------------------------------------------------
 # Required parameters are listed inside the braces: { }
 # Optional parameters are listed inside of the brackets [ ]
@@ -200,6 +200,18 @@ check_entware() {
   return 1 # Entware utilities not available
 }
 
+check_dnsmasq_ready() {
+  tries=15
+
+  while [ "$tries" -gt 0 ]; do
+    pidof dnsmasq >/dev/null 2>&1 && nslookup example.com 127.0.0.1 >/dev/null 2>&1 && return 0
+    tries=$((tries - 1))
+    [ "$tries" -gt 0 ] && sleep 1
+  done
+
+  return 1
+}
+
 get_param() {
   printf "%s\n" "$@" | grep "^$1=" | cut -d'=' -f2
 }
@@ -264,7 +276,13 @@ delete_entry_from_file() {
   if grep -Fq "$pattern" "$file"; then
     esc=$(printf '%s\n' "$pattern" | sed 's|[][\\/.^$*|]|\\&|g')
     sed -i "\|\(^\|[^[:alnum:]_-]\)$esc\([^[:alnum:]_-]\|$\)|d" "$file" && log_info "Entry containing '$pattern' deleted from $file"
-    [ "$file" = "$DNSMASQ_CONF" ] && service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
+
+    if [ "$file" = "$DNSMASQ_CONF" ]; then
+      service restart_dnsmasq >/dev/null 2>&1 || exit_error "Failed to restart dnsmasq service."
+      log_info "Restart dnsmasq service"
+      check_dnsmasq_ready || exit_error "dnsmasq did not become ready within 15 seconds after restart."
+    fi
+
     check_if_empty "$file"
   fi
 }
@@ -628,7 +646,10 @@ update_dnsmasq_conf() {
 
   [ -s "$DNSMASQ_CONF" ] && sed -i "\|ipset=.*/$IPSET_NAME|d" "$DNSMASQ_CONF"
   echo "ipset=/$domains/$IPSET_NAME" >>"$DNSMASQ_CONF" && log_info "Add '$domains' to $DNSMASQ_CONF"
-  service restart_dnsmasq >/dev/null 2>&1 && log_info "Restart dnsmasq service"
+  service restart_dnsmasq >/dev/null 2>&1 || exit_error "Failed to restart dnsmasq service."
+  log_info "Restart dnsmasq service"
+
+  check_dnsmasq_ready || exit_error "dnsmasq did not become ready within 15 seconds after restart."
 }
 
 dnsmasq_param() {
@@ -670,20 +691,46 @@ harvest_dnsmasq_queries() {
 fetch_asn_to_ipset() {
   asn="$1"
   file="$DIR/$IPSET_NAME-cache/$asn.cidr"
-  url="https://stat.ripe.net/data/as-routing-consistency/data.json?resource=$asn"
+  tmp="$file.tmp.$$"
+  json="$tmp.json"
 
-  if [ ! -s "$file" ] || [ -n "$(find "$file" -mtime +7 2>/dev/null)" ]; then
-    log_info "Fetching data from: $url"
-    tmp="$file.tmp.$$"
-    curl --retry 3 --connect-timeout 3 --speed-limit 1 --speed-time 30 -sSfL "$url" |
-      grep -oE "$CIDR_REGEX" |
-      sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n >"$tmp"
+  primary_url="https://stat.ripe.net/data/ris-prefixes/data.json?resource=$asn&list_prefixes=true&types=o&noise=filter&af=v4"
+  fallback_url="https://api.routeviews.org/asn/${asn#AS}?af=4"
 
-    if [ -s "$tmp" ]; then
+  if [ ! -f "$file" ] || [ -n "$(find "$file" -mtime +7 2>/dev/null)" ]; then
+    fetched=0
+
+    for url in "$primary_url" "$fallback_url"; do
+      log_info "Fetching data from: $url"
+      rm -f "$tmp" "$json"
+
+      if stats="$(curl --retry 1 --connect-timeout 5 --speed-limit 1 --speed-time 30 \
+        -sSfL -o "$json" -w '%{size_download} %{time_total}' "$url")" && {
+        if [ "$url" = "$primary_url" ]; then
+          grep -qE '"status"[[:space:]]*:[[:space:]]*"ok"' "$json"
+        else
+          grep -qE '^[[:space:]]*\[' "$json" && grep -qE '\][[:space:]]*$' "$json"
+        fi
+      }; then
+        log_info "Downloaded $asn: ${stats%% *} bytes in ${stats#* }s"
+
+        grep -oE "$CIDR_REGEX" "$json" | sort -t '.' -k1,1n -k2,2n -k3,3n -k4,4n | uniq >"$tmp"
+
+        [ -s "$tmp" ] || log_info "No IPv4 prefixes found for $asn."
+        fetched=1
+        break
+      fi
+
+      [ "$url" = "$primary_url" ] && log_warning "Primary URL failed. Trying fallback URL."
+    done
+
+    rm -f "$json"
+
+    if [ "$fetched" -eq 1 ]; then
       mv -f "$tmp" "$file"
     else
       rm -f "$tmp"
-      [ -s "$file" ] || exit_error "Fetching failed and no existing $file."
+      [ -f "$file" ] || exit_error "Fetching failed and no existing $file."
       log_warning "Fetching failed. Using existing $file."
     fi
   fi
@@ -714,7 +761,9 @@ asnum_param() {
     fi
   done
 
-  sort -ut '.' -k1,1n -k2,2n -k3,3n -k4,4n "$DIR/$IPSET_NAME" -o "$DIR/$IPSET_NAME"
+  sort -t '.' -k1,1n -k2,2n -k3,3n -k4,4n "$DIR/$IPSET_NAME" | uniq >"$DIR/$IPSET_NAME.tmp"
+  mv -f "$DIR/$IPSET_NAME.tmp" "$DIR/$IPSET_NAME"
+
   ASNUM_PARAM="asnum=\"$asnum_raw\""
 }
 
@@ -726,7 +775,7 @@ fetch_aws_to_ipset() {
   if [ ! -s "$file" ] || [ -n "$(find "$file" -mtime +7 2>/dev/null)" ]; then
     log_info "Fetching data from: $url"
     tmp="$file.tmp.$$"
-    curl --retry 3 --connect-timeout 3 --speed-limit 1 --speed-time 30 -sSfL -o "$tmp" "$url"
+    curl --retry 3 --connect-timeout 5 --speed-limit 1 --speed-time 30 -sSfL -o "$tmp" "$url"
 
     if [ -s "$tmp" ]; then
       mv -f "$tmp" "$file"
