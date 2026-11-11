@@ -5,7 +5,7 @@
 # Reworked by: NOFEXtream
 # Added WireGuard client/server and protocol/ports support.
 # Repository: https://github.com/NOFEXtreme/x3mRouting
-# Update: 05-Jun-2026
+# Update: 11-Nov-2026
 #---------------------------------------------------------------------------------------------------
 # Required parameters are listed inside the braces: { }
 # Optional parameters are listed inside of the brackets [ ]
@@ -459,7 +459,7 @@ vpns_to_ipset() {
 
   fwmark=$(
     iptables -t mangle -S PREROUTING 2>/dev/null |
-    grep -m1 -- "--match-set $IPSET_NAME" |
+    grep -m1 -F "match-set $IPSET_NAME " |
     sed -n 's|.*--set-\(x\)\?mark \(0x[^[:space:]]*\).*|\2|p'
   ) # Extract the last field (fwmark) from the iptables PREROUTING rule that matches the IPSET name.
   [ -z "$fwmark" ] && exit_error "Mandatory PREROUTING rule for IPSET name $IPSET_NAME does not exist."
@@ -485,7 +485,10 @@ vpns_to_ipset() {
       ipt mangle PREROUTING "-i $vpns_iface -m set --match-set $IPSET_NAME dst $PROTO_RULE -j MARK --set-mark $fwmark"
     done
   else # 'del' or 'del=force' option specified
-    iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" | grep "$IPSET_NAME" | grep "match-set" | awk '{print $1}' | sort -nr | while read -r chain_num; do
+    iptables -nvL PREROUTING -t mangle --line | grep "$vpns_iface" |
+    grep -F "match-set $IPSET_NAME " |
+    awk '{print $1}' |
+    sort -nr | while read -r chain_num; do
       iptables -t mangle -D PREROUTING "$chain_num" && log_info "Deleted PREROUTING Chain $chain_num for IPSET List $IPSET_NAME on $vpns_iface"
     done
 
@@ -595,10 +598,12 @@ del_ipset_list() {
   fi
 
   for iface in tun21 tun22 wgs1; do
-    iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME" | grep -q "$iface" && vpns_to_ipset "$iface"
+    iptables -nvL PREROUTING -t mangle --line |
+    grep -F "match-set $IPSET_NAME " |
+    grep -q "$iface" && vpns_to_ipset "$iface"
   done
 
-  pre_rules=$(iptables -nvL PREROUTING -t mangle --line | grep -w "$IPSET_NAME")
+  pre_rules=$(iptables -nvL PREROUTING -t mangle --line | grep -F "match-set $IPSET_NAME ")
   fwmark=$(echo "$pre_rules" | awk '{print $NF}' | head -n 1) # Extract fwmark and remove PREROUTING br0 rules for this IPSET
   if [ -n "$fwmark" ]; then
     echo "$pre_rules" | grep "br0" | awk '{print $1}' | sort -nr | while read -r num; do
